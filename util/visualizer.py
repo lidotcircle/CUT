@@ -3,6 +3,7 @@ import os
 import sys
 import ntpath
 import time
+import torch
 from . import util, html
 from subprocess import Popen, PIPE
 from util.tdlogger import TdLogger
@@ -17,7 +18,6 @@ else:
 os.makedirs("helloimages", exist_ok=True)
 class WDVisualizer():
     def __init__(self, opt) -> None:
-        print(opt.logger_endpoint)
         self.logger = TdLogger(opt.logger_endpoint, "CUT", 1, ("admin", "123456"), group_prefix=opt.logger_prefix, disabled=opt.disable_logger)
         self.log_name = 'cut.log'
 
@@ -43,12 +43,12 @@ class WDVisualizer():
         self.logger.send(losses)
 
     def display_current_results(self, visuals, epoch, save_result):
-        images = []
-        for label, image in visuals.items():
-            images.append(image)
-            image_path = "%s/%s_%s.png" % ("helloimages", epoch, label)
-            save_image(image, image_path, normalize=True)
-            self.logger.sendBlobFile(image_path, "%s-%s.png" % (epoch, label), "/validation_image/%s-%s/%s.png" % (self.logger.group_prefix, "hellodataset", epoch), "validation_image")
+        image_list = [ visuals['real_A'], visuals['real_B'], visuals['fake_B'], visuals['idt_B'] ]
+        images = torch.cat( image_list, dim = 0)
+        image = make_grid(images, nrow = 2, normalize = True)
+        image_path = "%s/%s.png" % ("helloimages", epoch)
+        save_image(image, image_path)
+        self.logger.sendBlobFile(image_path, "%s.png" % (epoch), "/validation_image/%s-%s/%s.png" % (self.logger.group_prefix, "hellodataset", epoch), "validation_image")
 
 
 def save_images(webpage, visuals, image_path, aspect_ratio=1.0, width=256):

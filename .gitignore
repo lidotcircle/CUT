@@ -9,6 +9,8 @@ checkpoints/
 results/
 build/
 dist/
+cut.log
+helloimages
 *.png
 torch.egg-info/
 */**/__pycache__
