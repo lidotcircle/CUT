@@ -4,7 +4,7 @@ from options.train_options import TrainOptions
 from data import create_dataset
 from models import create_model
 from util.visualizer import WDVisualizer
-from json import dumps
+import util.util as util
 
 
 if __name__ == '__main__':
@@ -14,6 +14,12 @@ if __name__ == '__main__':
 
     model = create_model(opt)      # create a model given opt.model and other options
     print('The number of training images = %d' % dataset_size)
+
+    test_dataset = create_dataset(util.copyconf(opt, phase="test", batch_size=5))
+    def sample_image():
+        _, data = next(enumerate(test_dataset))
+        model.set_input(data)  # unpack data from data loader
+        model.test()           # run inference
 
     visualizer = WDVisualizer(opt)   # create a visualizer that display/save images and plots
     opt.visualizer = visualizer
@@ -50,10 +56,10 @@ if __name__ == '__main__':
                 torch.cuda.synchronize()
             optimize_time = (time.time() - optimize_start_time) / batch_size * 0.005 + 0.995 * optimize_time
 
-            batches_done = epoch * len(dataset) + i
+            batches_done = (epoch - 1) * dataset_size + (i + 1) * batch_size
             if total_iters % opt.display_freq == 0:   # display images on visdom and save images to a HTML file
                 save_result = total_iters % opt.update_html_freq == 0
-                model.compute_visuals()
+                sample_image()
                 visualizer.display_current_results(model.get_current_visuals(), batches_done, save_result)
 
             if total_iters % opt.print_freq == 0:    # print training losses and save logging information to the disk

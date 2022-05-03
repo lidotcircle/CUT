@@ -1,11 +1,6 @@
 from .base_options import BaseOptions
 import os
 
-def str2val(type, sv):
-    if type == bool:
-        return sv == "True"
-    else:
-        return type(sv)
 
 class TrainOptions(BaseOptions):
     """This class includes training options.
@@ -15,31 +10,21 @@ class TrainOptions(BaseOptions):
 
     def initialize(self, parser):
         parser = BaseOptions.initialize(self, parser)
-        def add_argument(argname, type, default, help):
-            if (argname.startswith("--")):
-                argname = argname[2:]
-            strval = os.environ.get(argname)
-            val = str2val(type, strval) if strval else default
-            parser.add_argument("--" + argname, type=type, default=val, help=help)
 
         # logger
-        add_argument('--logger_endpoint', type=str , default="http://192.168.44.43:5445", help='logger endpoint')
-        add_argument('--logger_prefix',   type=str,  default="", help='logger group prefix')
-        add_argument('--disable_logger',  type=bool, default=False, help='logger endpoint')
-
-        # dataset
-        add_argument('--num_threads', default=0, type=int, help='# threads for loading data')
+        parser.add_argument('--logger_endpoint', type=str , default="http://192.168.44.43:5445", help='logger endpoint')
+        parser.add_argument('--logger_prefix',   type=str,  default="", help='logger group prefix')
+        parser.add_argument('--disable_logger',  type=bool, default=False, help='logger endpoint')
 
         # visdom and HTML visualization parameters
-        add_argument('--display_freq', type=int, default=400, help='frequency of showing training results on screen')
-        add_argument('--print_freq', type=int, default=20, help='frequency of showing training results on console')
-
+        parser.add_argument('--display_freq', type=int, default=400, help='frequency of showing training results on screen')
         parser.add_argument('--display_ncols', type=int, default=4, help='if positive, display all images in a single visdom web panel with certain number of images per row.')
         parser.add_argument('--display_id', type=int, default=None, help='window id of the web display. Default is random window id')
         parser.add_argument('--display_server', type=str, default="http://localhost", help='visdom server of the web display')
         parser.add_argument('--display_env', type=str, default='main', help='visdom display environment name (default is "main")')
         parser.add_argument('--display_port', type=int, default=8097, help='visdom port of the web display')
         parser.add_argument('--update_html_freq', type=int, default=1000, help='frequency of saving training results to html')
+        parser.add_argument('--print_freq', type=int, default=20, help='frequency of showing training results on console')
         parser.add_argument('--no_html', action='store_true', help='do not save intermediate training results to [opt.checkpoints_dir]/[opt.name]/web/')
         # network saving and loading parameters
         parser.add_argument('--save_latest_freq', type=int, default=5000, help='frequency of saving the latest results')

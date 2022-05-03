@@ -43,9 +43,10 @@ class WDVisualizer():
         self.logger.send(losses)
 
     def display_current_results(self, visuals, epoch, save_result):
-        image_list = [ visuals['real_A'], visuals['real_B'], visuals['fake_B'], visuals['idt_B'] ]
-        images = torch.cat( image_list, dim = 0)
-        image = make_grid(images, nrow = 2, normalize = True)
+        batch_size = visuals['real_A'].shape[0]
+        image_1 = make_grid(torch.cat([ visuals['real_A'], visuals['fake_B'] ], dim=0), nrow = batch_size, normalize = True)
+        image_2 = make_grid(torch.cat([ visuals['real_B'], visuals['idt_B'] ],  dim=0), nrow = batch_size, normalize = True)
+        image = torch.cat([image_1, image_2], dim=1)
         image_path = "%s/%s.png" % ("helloimages", epoch)
         save_image(image, image_path)
         self.logger.sendBlobFile(image_path, "%s.png" % (epoch), "/validation_image/%s-%s/%s.png" % (self.logger.group_prefix, "hellodataset", epoch), "validation_image")
