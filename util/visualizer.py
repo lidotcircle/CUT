@@ -4,6 +4,7 @@ import sys
 import ntpath
 import time
 import torch
+import GPUtil
 from . import util, html
 from subprocess import Popen, PIPE
 from util.tdlogger import TdLogger
@@ -39,8 +40,22 @@ class WDVisualizer():
         with open(self.log_name, "a") as log_file:
             log_file.write('%s\n' % message)  # save the message
 
+    def send_gpuinfo(self):
+        gpus = GPUtil.getGPUs()
+        gpu_loadinfo = {}
+        gpu_meminfo = {}
+        for i in range(0, len(gpus)):
+            gpu = gpus[i]
+            gpu_loadinfo["GPU" + str(i) + " Load"] = gpu.load
+            gpu_meminfo["GPU" + str(i) + " MemUsed"] = gpu.memoryUsed
+            gpu_meminfo["GPU" + str(i) + " MemFree"] = gpu.memoryFree
+            gpu_meminfo["GPU" + str(i) + " MemTotal"] = gpu.memoryTotal
+        self.logger.send(gpu_loadinfo, "simgan_gpuload_info")
+        self.logger.send(gpu_meminfo,  "simgan_gpumem_info")
+
     def plot_current_losses(self, epoch, counter_ratio, losses):
         self.logger.send(losses)
+        self.send_gpuinfo()
 
     def display_current_results(self, visuals, epoch, save_result):
         batch_size = visuals['real_A'].shape[0]
