@@ -252,6 +252,8 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=6, opt=opt)
     elif netG == 'resnet_4blocks':
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=4, opt=opt)
+    elif netG == 'resnetvae_5blocks':
+        net = ResnetVAE(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=5)
     elif netG == 'unet_128':
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == 'unet_256':
@@ -1032,7 +1034,26 @@ class ResnetDecoder(nn.Module):
             use_bias = norm_layer.func == nn.InstanceNorm2d
         else:
             use_bias = norm_layer == nn.InstanceNorm2d
-        model = []
+
+        model = [ ]
+
+        in_nc = input_nc
+        for i in range(3):
+            model += [nn.ConvTranspose2d(in_nc, int(in_nc / 2),
+                                            kernel_size=3, stride=2,
+                                            padding=1, output_padding=1,
+                                            bias=use_bias),
+                        norm_layer(int(in_nc / 2)),
+                        nn.ReLU(True)]
+            in_nc = int(in_nc / 2)
+
+        model += [nn.ConvTranspose2d(in_nc, ngf * 4,
+                                        kernel_size=3, stride=2,
+                                        padding=1, output_padding=1,
+                                        bias=use_bias),
+                    norm_layer(int(in_nc / 2)),
+                    nn.ReLU(True)]
+
         n_downsampling = 2
         mult = 2 ** n_downsampling
         for i in range(n_blocks):       # add ResNet blocks
@@ -1062,9 +1083,29 @@ class ResnetDecoder(nn.Module):
 
         self.model = nn.Sequential(*model)
 
-    def forward(self, input):
-        """Standard forward"""
-        return self.model(input)
+    def forward(self, input, layers=[], encode_only=False):
+        if -1 in layers:
+            layers.append(len(self.model))
+        if len(layers) > 0:
+            feat = input
+            feats = []
+            for layer_id, layer in enumerate(self.model):
+                # print(layer_id, layer)
+                feat = layer(feat)
+                if layer_id in layers:
+                    # print("%d: adding the output of %s %d" % (layer_id, layer.__class__.__name__, feat.size(1)))
+                    feats.append(feat)
+                else:
+                    # print("%d: skipping %s %d" % (layer_id, layer.__class__.__name__, feat.size(1)))
+                    pass
+                if layer_id == layers[-1] and encode_only:
+                    # print('encoder only return features')
+                    return feats  # return intermediate features alone; stop in the last layers
+
+            return feat, feats  # return both output and intermediate features
+        else:
+            """Standard forward"""
+            return self.model(input)
 
 
 class ResnetEncoder(nn.Module):
@@ -1113,11 +1154,102 @@ class ResnetEncoder(nn.Module):
 
             model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
 
+        in_nc = ngf * mult
+        for i in range(3):
+            model += [nn.Conv2d(in_nc, in_nc * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                        norm_layer(in_nc * 2),
+                        nn.ReLU(True)]
+            in_nc *= 2
+
+        model += [nn.Conv2d(in_nc, output_nc, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                    norm_layer(output_nc),
+                    nn.ReLU(True)]
+
         self.model = nn.Sequential(*model)
 
-    def forward(self, input):
-        """Standard forward"""
-        return self.model(input)
+    def forward(self, input, layers=[]):
+        if len(layers) > 0:
+            feat = input
+            feats = []
+            for layer_id, layer in enumerate(self.model):
+                # print(layer_id, layer)
+                feat = layer(feat)
+                if layer_id in layers:
+                    # print("%d: adding the output of %s %d" % (layer_id, layer.__class__.__name__, feat.size(1)))
+                    feats.append(feat)
+                else:
+                    # print("%d: skipping %s %d" % (layer_id, layer.__class__.__name__, feat.size(1)))
+                    pass
+
+            return feat, feats  # return both output and intermediate features
+        else:
+            """Standard forward"""
+            return self.model(input)
+
+
+class ResnetVAE(nn.Module):
+    """Resnet-based VAE
+    """
+    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect', no_antialias=False, no_antialias_up=False, opt=None):
+        super(ResnetVAE, self).__init__()
+        self.interm_output_nc = 128
+        self.opt = opt
+        self.encoder = ResnetEncoder(input_nc, self.interm_output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=n_blocks, padding_type=padding_type, no_antialias=no_antialias)
+        self.mu_linear = nn.Linear(self.interm_output_nc * 4 * 4, 16 * 128)
+        self.logvar_linear = nn.Linear(self.interm_output_nc * 4 * 4, 16 * 128)
+
+        self.recover_linear = nn.Linear(16 * 128, self.interm_output_nc * 4 * 4)
+        self.decoder = ResnetDecoder(self.interm_output_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=n_blocks, padding_type=padding_type, no_antialias=no_antialias)
+
+    def gaussian_reparameterization(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+    
+    def forward(self, input, layers = [], encode_only=False):
+        if len(layers) > 0:
+            NencoderLayers = len(self.encoder.model)
+            l1 = list(filter(lambda x: x < NencoderLayers and x >= 0, layers))
+            l2 = list(map(lambda x: x - NencoderLayers if x > 0 else x, filter(lambda x: x >= NencoderLayers or x < 0, layers)))
+            if len(l1) == 0:
+                x = self.encoder(input)
+                feats = []
+            else:
+                x, feats = self.encoder(input, l1)
+            intermshape = x.shape
+            x = x.view(x.size(0), -1)
+            mu, logvar = self.mu_linear(x), self.logvar_linear(x)
+            z = self.gaussian_reparameterization(mu, logvar)
+
+            x = self.recover_linear(z)
+            x = x.view(intermshape)
+
+            if len(l2) == 0:
+                if encode_only:
+                    return feats
+                else:
+                    output = self.decoder(x)
+                    return output, mu, logvar, z, feats
+            else:
+                if encode_only:
+                    _, feats2 = self.decoder(x, l2, True)
+                    feats = feats + feats2
+                    return feats
+                else:
+                    output, feats2 = self.decoder(x, l2)
+                    feats = feats + feats2
+                    return output, mu, logvar, z, feats
+        else:
+            """Standard forward"""
+            x = self.encoder(input)
+            intermshape = x.shape
+            x = x.view(x.size(0), -1)
+            mu, logvar = self.mu_linear(x), self.logvar_linear(x)
+            z = self.gaussian_reparameterization(mu, logvar)
+
+            x = self.recover_linear(z)
+            output = self.decoder(x.view(intermshape))
+            return output, mu, logvar, z
 
 
 class ResnetBlock(nn.Module):
