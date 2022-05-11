@@ -21,7 +21,7 @@ class CUTModel(BaseModel):
         """
         parser.add_argument('--CUT_mode', type=str, default="CUT", choices='(CUT, cut, FastCUT, fastcut)')
 
-        parser.add_argument('--lambda_KLD', type=float, default=1.0, help='weight for KLD loss：KLD(N(0,1)||N(mu, sigma))')
+        parser.add_argument('--lambda_KLD', type=float, default=0.0, help='weight for KLD loss：KLD(N(0,1)||N(mu, sigma))')
         parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss：GAN(G(X))')
         parser.add_argument('--lambda_NCE', type=float, default=1.0, help='weight for NCE loss: NCE(G(X), X)')
         parser.add_argument('--nce_idt', type=util.str2bool, nargs='?', const=True, default=False, help='use NCE loss for identity mapping: NCE(G(Y), Y))')
