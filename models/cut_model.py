@@ -179,13 +179,13 @@ class CUTModel(BaseModel):
     def compute_G_loss(self):
         """Calculate GAN and NCE loss for the generator"""
         fake = self.fake_B
-        mu = self.mu
-        logvar = self.logvar
+        mu = self.mu.view(self.mu.size(0), -1)
+        logvar = self.logvar.view(self.logvar.size(0), -1)
         z = self.z
 
         # KL loss
         if self.opt.lambda_KLD > 0.0:
-            self.loss_KLD = torch.mean(-0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1))
+            self.loss_KLD = torch.mean(-0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)) * self.opt.lambda_KLD
         else:
             self.loss_KLD = 0
 
