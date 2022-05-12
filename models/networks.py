@@ -1035,19 +1035,40 @@ class ResnetDecoder(nn.Module):
         else:
             use_bias = norm_layer == nn.InstanceNorm2d
 
-        n_downsampling = 2
-        mult = 2 ** n_downsampling
-
-        self.fc = nn.Sequential(nn.Linear(in_features=z_size, out_features=4 * 4 * (ngf * mult), bias=False),
+        channels = int(ngf * (1.5 ** 4) * (2 ** 2))
+        self.fc = nn.Sequential(nn.Linear(in_features=z_size, out_features=channels, bias=False),
                         # nn.BatchNorm1d(num_features=4 * 4 * (ngf * mult), momentum=0.9),
                         nn.ReLU(True))
 
-        model = [nn.ConvTranspose2d(ngf * mult, ngf * mult,
-                                        kernel_size=16, stride=16,
+        model = [nn.ConvTranspose2d(channels, channels,
+                                        kernel_size=4, stride=4,
                                         padding=0, output_padding=0,
                                         bias=use_bias),
-                    norm_layer(ngf * mult),
-                    nn.ReLU(True)]
+                 norm_layer(channels),
+                 nn.ReLU(True)]
+
+        extra_n_downsampling = 4
+        for i in range(extra_n_downsampling):  # add upsampling layers
+            next_channels = int(channels / 1.5)
+            if(no_antialias):
+                model += [nn.ConvTranspose2d(channels, next_channels,
+                                             kernel_size=3, stride=2,
+                                             padding=1, output_padding=1,
+                                             bias=use_bias),
+                          norm_layer(next_channels),
+                          nn.ReLU(True)]
+            else:
+                model += [Upsample(channels),
+                          nn.Conv2d(channels, next_channels,
+                                    kernel_size=3, stride=1,
+                                    padding=1,
+                                    bias=use_bias),
+                          norm_layer(next_channels),
+                          nn.ReLU(True)]
+            channels = next_channels
+
+        n_downsampling = 2
+        mult = 2 ** n_downsampling
 
         for i in range(n_blocks):       # add ResNet blocks
 
@@ -1078,7 +1099,7 @@ class ResnetDecoder(nn.Module):
 
     def forward(self, input, layers=[], encode_only=False):
         input = self.fc(input)
-        input = input.view(input.size(0), -1, 4, 4)
+        input = input.view(input.size(0), -1, 1, 1)
 
         if -1 in layers:
             layers.append(len(self.model))
@@ -1150,16 +1171,32 @@ class ResnetEncoder(nn.Module):
 
             model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
 
-        # B x (ngf * mult) x 64 x 64 => B x (ngf * mult) x 4 x 4
-        model += [ nn.AvgPool2d(kernel_size=16) ]
+
+        channels = ngf * mult
+        n_extra_donwsampling = 4
+        for i in range(n_extra_donwsampling):  # add extra downsampling layers
+            next_channels = int(channels * 1.5)
+            if(no_antialias):
+                model += [nn.Conv2d(channels, next_channels, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                          norm_layer(next_channels),
+                          nn.ReLU(True)]
+            else:
+                model += [nn.Conv2d(channels, next_channels, kernel_size=3, stride=1, padding=1, bias=use_bias),
+                          norm_layer(next_channels),
+                          nn.ReLU(True),
+                          Downsample(next_channels)]
+            channels = next_channels
+
+        model += [nn.AdaptiveAvgPool2d(1)]
         self.model = nn.Sequential(*model)
 
-        self.fc = nn.Sequential(nn.Linear(in_features=4 * 4 * (ngf * mult), out_features=1024, bias=False),
-                        # nn.BatchNorm1d(num_features=1024,momentum=0.9),
+        # B x channels x 1 x 1
+        self.fc = nn.Sequential(nn.Linear(in_features=channels, out_features=z_size, bias=False),
+                        # nn.BatchNorm1d(num_features=4 * 4 * (ngf * mult), momentum=0.9),
                         nn.ReLU(True))
 
-        self.l_mu = nn.Linear(in_features=1024, out_features=z_size)
-        self.l_var = nn.Linear(in_features=1024, out_features=z_size)
+        self.l_mu = nn.Linear(in_features=z_size, out_features=z_size)
+        self.l_var = nn.Linear(in_features=z_size, out_features=z_size)
 
 
     def forward(self, input, layers=[]):
