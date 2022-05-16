@@ -24,6 +24,7 @@ class WDVisualizer():
             prefix = "[CUT-" + time.strftime("%Y%m%d-%H%M%S", time.localtime()) + "]"
         self.logger = TdLogger(opt.logger_endpoint, "CUT", 1, ("admin", "123456"), group_prefix=prefix, disabled=opt.disable_logger)
         self.log_name = 'cut.log'
+        self.opt = opt
 
     def print_current_losses(self, epoch, iters, losses, t_comp, t_data):
         """print current losses on console; also save the losses to the disk
@@ -63,8 +64,11 @@ class WDVisualizer():
     def display_current_results(self, visuals, epoch, save_result):
         batch_size = visuals['real_A'].shape[0]
         image_1 = make_grid(torch.cat([ visuals['real_A'], visuals['fake_B'] ], dim=0), nrow = batch_size, normalize = True)
-        image_2 = make_grid(torch.cat([ visuals['real_B'], visuals['idt_B'] ],  dim=0), nrow = batch_size, normalize = True)
-        image = torch.cat([image_1, image_2], dim=1)
+        if self.opt.lambda_NCE > 0:
+            image_2 = make_grid(torch.cat([ visuals['real_B'], visuals['idt_B'] ],  dim=0), nrow = batch_size, normalize = True)
+            image = torch.cat([image_1, image_2], dim=1)
+        else:
+            image = image_1
         image_path = "%s/%s.png" % ("helloimages", epoch)
         save_image(image, image_path)
         self.logger.sendBlobFile(image_path, "%s.png" % (epoch), "/validation_image/%s-%s/%s.png" % (self.logger.group_prefix, "hellodataset", epoch), "validation_image")

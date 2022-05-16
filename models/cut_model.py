@@ -21,8 +21,9 @@ class CUTModel(BaseModel):
         """
         parser.add_argument('--CUT_mode', type=str, default="CUT", choices='(CUT, cut, FastCUT, fastcut)')
 
+        default_lambda_NCE = 0.0
         parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss：GAN(G(X))')
-        parser.add_argument('--lambda_NCE', type=float, default=1.0, help='weight for NCE loss: NCE(G(X), X)')
+        parser.add_argument('--lambda_NCE', type=float, default=default_lambda_NCE, help='weight for NCE loss: NCE(G(X), X)')
         parser.add_argument('--nce_idt', type=util.str2bool, nargs='?', const=True, default=False, help='use NCE loss for identity mapping: NCE(G(Y), Y))')
         parser.add_argument('--nce_layers', type=str, default='0,3,6,9,11', help='compute NCE loss on which layers')
         parser.add_argument('--nce_includes_all_negatives_from_minibatch',
@@ -41,15 +42,16 @@ class CUTModel(BaseModel):
         opt, _ = parser.parse_known_args()
 
         # Set default parameters for CUT and FastCUT
-        if opt.CUT_mode.lower() == "cut":
-            parser.set_defaults(nce_idt=True, lambda_NCE=1.0)
-        elif opt.CUT_mode.lower() == "fastcut":
-            parser.set_defaults(
-                nce_idt=False, lambda_NCE=10.0, flip_equivariance=True,
-                n_epochs=150, n_epochs_decay=50
-            )
-        else:
-            raise ValueError(opt.CUT_mode)
+        if default_lambda_NCE > 0:
+            if opt.CUT_mode.lower() == "cut":
+                parser.set_defaults(nce_idt=True, lambda_NCE=1.0)
+            elif opt.CUT_mode.lower() == "fastcut":
+                parser.set_defaults(
+                    nce_idt=False, lambda_NCE=10.0, flip_equivariance=True,
+                    n_epochs=150, n_epochs_decay=50
+                )
+            else:
+                raise ValueError(opt.CUT_mode)
 
         return parser
 
@@ -124,12 +126,12 @@ class CUTModel(BaseModel):
         # update G
         self.set_requires_grad(self.netD, False)
         self.optimizer_G.zero_grad()
-        if self.opt.netF == 'mlp_sample':
+        if self.opt.netF == 'mlp_sample' and self.opt.lambda_NCE > 0.0:
             self.optimizer_F.zero_grad()
         self.loss_G = self.compute_G_loss()
         self.loss_G.backward()
         self.optimizer_G.step()
-        if self.opt.netF == 'mlp_sample':
+        if self.opt.netF == 'mlp_sample' and self.opt.lambda_NCE > 0.0:
             self.optimizer_F.step()
 
     def set_input(self, input):
