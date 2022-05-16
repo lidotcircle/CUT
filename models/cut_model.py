@@ -21,11 +21,10 @@ class CUTModel(BaseModel):
         """
         parser.add_argument('--CUT_mode', type=str, default="CUT", choices='(CUT, cut, FastCUT, fastcut)')
 
-        parser.add_argument('--lambda_KLD', type=float, default=1.0, help='weight for KLD loss：KLD(N(0,1)||N(mu, sigma))')
         parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss：GAN(G(X))')
         parser.add_argument('--lambda_NCE', type=float, default=1.0, help='weight for NCE loss: NCE(G(X), X)')
         parser.add_argument('--nce_idt', type=util.str2bool, nargs='?', const=True, default=False, help='use NCE loss for identity mapping: NCE(G(Y), Y))')
-        parser.add_argument('--nce_layers', type=str, default='0,4,8,12,16', help='compute NCE loss on which layers')
+        parser.add_argument('--nce_layers', type=str, default='0,3,6,9,11', help='compute NCE loss on which layers')
         parser.add_argument('--nce_includes_all_negatives_from_minibatch',
                             type=util.str2bool, nargs='?', const=True, default=False,
                             help='(used for single image translation) If True, include the negatives from the other samples of the minibatch when computing the contrastive loss. Please see models/patchnce.py for more details.')
@@ -59,7 +58,7 @@ class CUTModel(BaseModel):
 
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', 'NCE', 'KLD']
+        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', 'NCE']
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         self.nce_layers = [int(i) for i in self.opt.nce_layers.split(',')]
 
@@ -152,11 +151,7 @@ class CUTModel(BaseModel):
             if self.flipped_for_equivariance:
                 self.real = torch.flip(self.real, [3])
 
-        fake, mu, logvar, z = self.netG(self.real)
-        self.fake = fake
-        self.mu = mu
-        self.logvar = logvar
-        self.z = z
+        self.fake = self.netG(self.real)
         self.fake_B = self.fake[:self.real_A.size(0)]
         if self.opt.nce_idt:
             self.idt_B = self.fake[self.real_A.size(0):]
@@ -179,15 +174,6 @@ class CUTModel(BaseModel):
     def compute_G_loss(self):
         """Calculate GAN and NCE loss for the generator"""
         fake = self.fake_B
-        mu = self.mu.view(self.mu.size(0), -1)
-        logvar = self.logvar.view(self.logvar.size(0), -1)
-        z = self.z
-
-        # KL loss
-        if self.opt.lambda_KLD > 0.0:
-            self.loss_KLD = torch.mean(-0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)) * self.opt.lambda_KLD
-        else:
-            self.loss_KLD = 0
 
         # First, G(A) should fake the discriminator
         if self.opt.lambda_GAN > 0.0:
@@ -207,7 +193,7 @@ class CUTModel(BaseModel):
         else:
             loss_NCE_both = self.loss_NCE
 
-        self.loss_G = self.loss_G_GAN + loss_NCE_both + self.loss_KLD
+        self.loss_G = self.loss_G_GAN + loss_NCE_both
         return self.loss_G
 
     def calculate_NCE_loss(self, src, tgt):

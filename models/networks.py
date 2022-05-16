@@ -5,7 +5,11 @@ from torch.nn import init
 import functools
 from torch.optim import lr_scheduler
 import numpy as np
+
 from .stylegan_networks import StyleGAN2Discriminator, StyleGAN2Generator, TileStyleGAN2Discriminator
+from .patch_embed import EmbeddingStem, Tokens2Image
+from .transformer import Transformer
+
 
 ###############################################################################
 # Helper Functions
@@ -254,6 +258,8 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=4, opt=opt)
     elif netG == 'resnetvae_5blocks':
         net = ResnetVAE(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=5)
+    elif netG == 'transformer':
+        net = ViTGenerator(image_size=256)
     elif netG == 'unet_128':
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == 'unet_256':
@@ -544,7 +550,7 @@ class PatchSampleF(nn.Module):
 
     def create_mlp(self, feats):
         for mlp_id, feat in enumerate(feats):
-            input_nc = feat.shape[1]
+            input_nc = feat.shape[2]
             mlp = nn.Sequential(*[nn.Linear(input_nc, self.nc), nn.ReLU(), nn.Linear(self.nc, self.nc)])
             if len(self.gpu_ids) > 0:
                 mlp.cuda()
@@ -553,34 +559,31 @@ class PatchSampleF(nn.Module):
         self.mlp_init = True
 
     def forward(self, feats, num_patches=64, patch_ids=None):
+        assert num_patches > 0
         return_ids = []
         return_feats = []
         if self.use_mlp and not self.mlp_init:
             self.create_mlp(feats)
         for feat_id, feat in enumerate(feats):
-            B, H, W = feat.shape[0], feat.shape[2], feat.shape[3]
-            feat_reshape = feat.permute(0, 2, 3, 1).flatten(1, 2)
-            if num_patches > 0:
-                if patch_ids is not None:
-                    patch_id = patch_ids[feat_id]
-                else:
-                    # torch.randperm produces cudaErrorIllegalAddress for newer versions of PyTorch. https://github.com/taesungp/contrastive-unpaired-translation/issues/83
-                    #patch_id = torch.randperm(feat_reshape.shape[1], device=feats[0].device)
-                    patch_id = np.random.permutation(feat_reshape.shape[1])
-                    patch_id = patch_id[:int(min(num_patches, patch_id.shape[0]))]  # .to(patch_ids.device)
-                patch_id = torch.tensor(patch_id, dtype=torch.long, device=feat.device)
-                x_sample = feat_reshape[:, patch_id, :].flatten(0, 1)  # reshape(-1, x.shape[1])
+            _, N, _ = feat.shape
+            feat_reshape = feat
+
+            if patch_ids is not None:
+                patch_id = patch_ids[feat_id]
             else:
-                x_sample = feat_reshape
-                patch_id = []
+                # torch.randperm produces cudaErrorIllegalAddress for newer versions of PyTorch. https://github.com/taesungp/contrastive-unpaired-translation/issues/83
+                #patch_id = torch.randperm(feat_reshape.shape[1], device=feats[0].device)
+                patch_id = np.random.permutation(N)
+                patch_id = patch_id[:int(min(num_patches, N))]  # .to(patch_ids.device)
+            patch_id = torch.tensor(patch_id, dtype=torch.long, device=feat.device)
+            x_sample = feat_reshape[:, patch_id, :].flatten(0, 1)  # reshape(-1, x.shape[1])
+
             if self.use_mlp:
                 mlp = getattr(self, 'mlp_%d' % feat_id)
                 x_sample = mlp(x_sample)
             return_ids.append(patch_id)
             x_sample = self.l2norm(x_sample)
 
-            if num_patches == 0:
-                x_sample = x_sample.permute(0, 2, 1).reshape([B, x_sample.shape[-1], H, W])
             return_feats.append(x_sample)
         return return_feats, return_ids
 
@@ -1291,6 +1294,174 @@ class ResnetBlock(nn.Module):
         """Forward function (with skip connections)"""
         out = x + self.conv_block(x)  # add skip connections
         return out
+
+
+class ViTEncoder(nn.Module):
+    def __init__(
+        self,
+        image_size=256,
+        patch_size=16,
+        in_channels=3,
+        embedding_dim=768,
+        num_layers=12,
+        num_heads=12,
+        qkv_bias=True,
+        mlp_ratio=4.0,
+        use_revised_ffn=False,
+        dropout_rate=0.0,
+        attn_dropout_rate=0.0,
+        use_conv_stem=True,
+        use_conv_patch=False,
+        use_linear_patch=False,
+        use_conv_stem_original=True,
+        use_stem_scaled_relu=False,
+        hidden_dims=None,
+        cls_head=False,
+    ):
+        super(ViTEncoder, self).__init__()
+
+        # embedding layer
+        self.embedding_layer = EmbeddingStem(
+            image_size=image_size,
+            patch_size=patch_size,
+            channels=in_channels,
+            embedding_dim=embedding_dim,
+            hidden_dims=hidden_dims,
+            conv_patch=use_conv_patch,
+            linear_patch=use_linear_patch,
+            conv_stem=use_conv_stem,
+            conv_stem_original=use_conv_stem_original,
+            conv_stem_scaled_relu=use_stem_scaled_relu,
+            position_embedding_dropout=dropout_rate,
+            cls_head=cls_head,
+        )
+
+        # transformer
+        self.transformer = Transformer(
+            dim=embedding_dim,
+            depth=num_layers,
+            heads=num_heads,
+            mlp_ratio=mlp_ratio,
+            attn_dropout=attn_dropout_rate,
+            dropout=dropout_rate,
+            qkv_bias=qkv_bias,
+            revised=use_revised_ffn,
+        )
+        self.post_transformer_ln = nn.LayerNorm(embedding_dim)
+
+    def forward(self, x):
+        x = self.embedding_layer(x)
+        x = self.transformer(x)
+        x = self.post_transformer_ln(x)
+        return x
+
+class ViTDecoder(nn.Module):
+    def __init__(
+        self,
+        image_size=256,
+        patch_size=16,
+        in_channels=3,
+        embedding_dim=768,
+        num_layers=12,
+        num_heads=12,
+        qkv_bias=True,
+        mlp_ratio=4.0,
+        use_revised_ffn=False,
+        dropout_rate=0.0,
+        attn_dropout_rate=0.0,
+    ):
+        super(ViTDecoder, self).__init__()
+
+        # transformer
+        self.transformer = Transformer(
+            dim=embedding_dim,
+            depth=num_layers,
+            heads=num_heads,
+            mlp_ratio=mlp_ratio,
+            attn_dropout=attn_dropout_rate,
+            dropout=dropout_rate,
+            qkv_bias=qkv_bias,
+            revised=use_revised_ffn,
+        )
+        self.post_transformer_ln = nn.LayerNorm(embedding_dim)
+        self.output = Tokens2Image(image_size=image_size, patch_size=patch_size, channels=in_channels, embedding_dim=embedding_dim)
+
+    def forward(self, x):
+        x = self.transformer(x)
+        x = self.post_transformer_ln(x)
+        return self.output(x)
+
+class ViTGenerator(nn.Module):
+    def __init__(
+        self,
+        image_size=256,
+        patch_size=16,
+        in_channels=3,
+        embedding_dim=768,
+        num_layers=12,
+        num_heads=12,
+        qkv_bias=True,
+        mlp_ratio=4.0,
+        use_revised_ffn=False,
+        dropout_rate=0.0,
+        attn_dropout_rate=0.0,
+        use_conv_stem=False,
+        use_conv_patch=True,
+        use_linear_patch=False,
+        use_conv_stem_original=True,
+        use_stem_scaled_relu=False,
+        hidden_dims=None,
+    ):
+        super(ViTGenerator, self).__init__()
+
+        # embedding layer
+        self.embedding_layer = EmbeddingStem(
+            image_size=image_size,
+            patch_size=patch_size,
+            channels=in_channels,
+            embedding_dim=embedding_dim,
+            hidden_dims=hidden_dims,
+            conv_patch=use_conv_patch,
+            linear_patch=use_linear_patch,
+            conv_stem=use_conv_stem,
+            conv_stem_original=use_conv_stem_original,
+            conv_stem_scaled_relu=use_stem_scaled_relu,
+            position_embedding_dropout=dropout_rate,
+            cls_head=False,
+        )
+
+        # transformer
+        self.transformer = Transformer(
+            dim=embedding_dim,
+            depth=num_layers,
+            heads=num_heads,
+            mlp_ratio=mlp_ratio,
+            attn_dropout=attn_dropout_rate,
+            dropout=dropout_rate,
+            qkv_bias=qkv_bias,
+            revised=use_revised_ffn,
+        )
+        self.post_transformer_ln = nn.LayerNorm(embedding_dim)
+        self.output = Tokens2Image(image_size=image_size, patch_size=patch_size, channels=in_channels, embedding_dim=embedding_dim)
+
+    def forward(self, x, layers = [], encode_only: bool = False):
+        x = self.embedding_layer(x)
+        features = []
+        if encode_only:
+            assert len(layers) > 0
+            return self.transformer(x, layers, encode_only)
+        else:
+            if len(layers) > 0:
+                x, features = self.transformer(x, layers)
+            else:
+                x = self.transformer(x)
+        x = self.post_transformer_ln(x)
+        x = self.output(x)
+
+        if len(features) > 0:
+            return x, features
+        else:
+            return x
 
 
 class UnetGenerator(nn.Module):
