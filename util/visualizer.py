@@ -19,7 +19,10 @@ else:
 os.makedirs("helloimages", exist_ok=True)
 class WDVisualizer():
     def __init__(self, opt) -> None:
-        self.logger = TdLogger(opt.logger_endpoint, "CUT", 1, ("admin", "123456"), group_prefix=opt.logger_prefix, disabled=opt.disable_logger)
+        prefix = opt.logger_prefix
+        if prefix is None or prefix == '':
+            prefix = "[CUT-" + time.strftime("%Y%m%d-%H%M%S", time.localtime()) + "]"
+        self.logger = TdLogger(opt.logger_endpoint, "CUT", 1, ("admin", "123456"), group_prefix=prefix, disabled=opt.disable_logger)
         self.log_name = 'cut.log'
 
     def print_current_losses(self, epoch, iters, losses, t_comp, t_data):
@@ -50,8 +53,8 @@ class WDVisualizer():
             gpu_meminfo["GPU" + str(i) + " MemUsed"] = gpu.memoryUsed
             gpu_meminfo["GPU" + str(i) + " MemFree"] = gpu.memoryFree
             gpu_meminfo["GPU" + str(i) + " MemTotal"] = gpu.memoryTotal
-        self.logger.send(gpu_loadinfo, "simgan_gpuload_info")
-        self.logger.send(gpu_meminfo,  "simgan_gpumem_info")
+        self.logger.send(gpu_loadinfo, "gpuload_info")
+        self.logger.send(gpu_meminfo,  "gpumem_info")
 
     def plot_current_losses(self, epoch, counter_ratio, losses):
         self.logger.send(losses)
