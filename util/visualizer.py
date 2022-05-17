@@ -21,7 +21,7 @@ class WDVisualizer():
     def __init__(self, opt) -> None:
         prefix = opt.logger_prefix
         if prefix is None or prefix == '':
-            prefix = "[CUT-" + time.strftime("%Y%m%d-%H%M%S", time.localtime()) + "]"
+            prefix = "[CUT-" + time.strftime("%m-%d %H:%M:%S", time.localtime()) + "]"
         self.logger = TdLogger(opt.logger_endpoint, "CUT", 1, ("admin", "123456"), group_prefix=prefix, disabled=opt.disable_logger)
         self.log_name = 'cut.log'
         self.opt = opt

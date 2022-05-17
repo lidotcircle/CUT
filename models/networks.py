@@ -1391,6 +1391,30 @@ class ViTDecoder(nn.Module):
         x = self.post_transformer_ln(x)
         return self.output(x)
 
+class SineLayer(nn.Module):
+    """
+    Paper: Implicit Neural Representation with Periodic Activ ation Function (SIREN)
+    """
+    def __init__(self, in_features, out_features, bias = True,is_first = False, omega_0 = 30):
+        super().__init__()
+        self.omega_0 = omega_0
+        self.is_first = is_first
+
+        self.in_features = in_features
+        self.linear = nn.Linear(in_features, out_features, bias=bias)
+
+        self.init_weights()
+
+    def init_weights(self):
+        with torch.no_grad():
+            if self.is_first:
+                self.linear.weight.uniform_(-1 / self.in_features, 1 / self.in_features)
+            else:
+                self.linear.weight.uniform_(-np.sqrt(6 / self.in_features) / self.omega_0, np.sqrt(6 / self.in_features) / self.omega_0)
+
+    def forward(self, input):
+        return torch.sin(self.omega_0 * self.linear(input))
+
 class ViTGenerator(nn.Module):
     def __init__(
         self,
@@ -1406,8 +1430,8 @@ class ViTGenerator(nn.Module):
         dropout_rate=0.0,
         attn_dropout_rate=0.0,
         use_conv_stem=False,
-        use_conv_patch=True,
-        use_linear_patch=False,
+        use_conv_patch=False,
+        use_linear_patch=True,
         use_conv_stem_original=True,
         use_stem_scaled_relu=False,
         hidden_dims=None,
@@ -1442,7 +1466,11 @@ class ViTGenerator(nn.Module):
             revised=use_revised_ffn,
         )
         self.post_transformer_ln = nn.LayerNorm(embedding_dim)
-        self.output = Tokens2Image(image_size=image_size, patch_size=patch_size, channels=in_channels, embedding_dim=embedding_dim)
+        self.w_out = nn.Sequential(
+            SineLayer(embedding_dim, embedding_dim * 2, is_first = True, omega_0 = 30.),
+            # TODO
+            SineLayer(embedding_dim * 2, in_channels * 16 * 16, is_first = False, omega_0 = 30)
+        )
 
     def forward(self, x, layers = [], encode_only: bool = False):
         x = self.embedding_layer(x)
@@ -1456,7 +1484,10 @@ class ViTGenerator(nn.Module):
             else:
                 x = self.transformer(x)
         x = self.post_transformer_ln(x)
-        x = self.output(x)
+        x = self.w_out(x)
+        # TODO
+        x = x.permute(0, 2, 1)
+        x = F.fold(x, output_size=(256, 256), kernel_size=(16,16), stride=(16,16))
 
         if len(features) > 0:
             return x, features
