@@ -64,6 +64,10 @@ if __name__ == '__main__':
 
             if total_iters % opt.print_freq == 0:    # print training losses and save logging information to the disk
                 losses = model.get_current_losses()
+                losses['parameterNorm'] = model.gparam
+                losses['gradNorm'] = model.ggrad
+                losses['paramterNormAvg'] = model.gparam_avg
+                losses['gradNormAvg'] = model.ggrad_avg
                 visualizer.print_current_losses(batches_done, epoch_iter, losses, optimize_time, t_data)
                 visualizer.plot_current_losses(batches_done, float(epoch_iter) / dataset_size, losses)
 

@@ -4,6 +4,7 @@ from .base_model import BaseModel
 from . import networks
 from .patchnce import PatchNCELoss
 import util.util as util
+from .utils import computeModelParametersNorm1, computeModelGradientsNorm1
 
 
 class CUTModel(BaseModel):
@@ -129,6 +130,15 @@ class CUTModel(BaseModel):
         if self.opt.netF == 'mlp_sample' and self.opt.lambda_NCE > 0.0:
             self.optimizer_F.zero_grad()
         self.loss_G = self.compute_G_loss()
+
+        self.gparam, self.gparamn = computeModelParametersNorm1(self.netG)
+        self.ggrad, nx = computeModelGradientsNorm1(self.netG)
+        assert nx == self.gparamn
+        self.gparam = self.gparam.item()
+        self.ggrad = self.ggrad.item()
+        self.gparam_avg = self.gparam / self.gparamn
+        self.ggrad_avg = self.ggrad / self.gparamn
+
         self.loss_G.backward()
         self.optimizer_G.step()
         if self.opt.netF == 'mlp_sample' and self.opt.lambda_NCE > 0.0:
