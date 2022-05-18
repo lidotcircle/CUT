@@ -130,6 +130,7 @@ class CUTModel(BaseModel):
         if self.opt.netF == 'mlp_sample' and self.opt.lambda_NCE > 0.0:
             self.optimizer_F.zero_grad()
         self.loss_G = self.compute_G_loss()
+        self.loss_G.backward()
 
         self.gparam, self.gparamn = computeModelParametersNorm1(self.netG)
         self.ggrad, nx = computeModelGradientsNorm1(self.netG)
@@ -139,7 +140,6 @@ class CUTModel(BaseModel):
         self.gparam_avg = self.gparam / self.gparamn
         self.ggrad_avg = self.ggrad / self.gparamn
 
-        self.loss_G.backward()
         self.optimizer_G.step()
         if self.opt.netF == 'mlp_sample' and self.opt.lambda_NCE > 0.0:
             self.optimizer_F.step()
