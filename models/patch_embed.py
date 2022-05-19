@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops.layers.torch import Rearrange
 from .utils import trunc_normal_
 
@@ -69,14 +70,7 @@ class EmbeddingStem(nn.Module):
             )
         elif linear_patch:
             patch_dim = channels * patch_height * patch_width
-            self.projection = nn.Sequential(
-                Rearrange(
-                    'b c (h p1) (w p2) -> b (h w) (p1 p2 c)',
-                    p1=patch_height,
-                    p2=patch_width,
-                ),
-                nn.Linear(patch_dim, embedding_dim),
-            )
+            self.projection = nn.Linear(patch_dim, embedding_dim)
         elif conv_stem:
             assert (
                 conv_stem_scaled_relu ^ conv_stem_original
@@ -173,6 +167,8 @@ class EmbeddingStem(nn.Module):
 
         # paths for cls_token / position embedding
         elif self.linear_patch:
+            x = F.unfold(x, kernel_size=8, stride=8)
+            x = x.permute(0, 2, 1).contiguous()
             x = self.projection(x)
         elif self.conv_patch:
             x = self.projection(x)

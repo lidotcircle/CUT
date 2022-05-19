@@ -259,7 +259,7 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
     elif netG == 'resnetvae_5blocks':
         net = ResnetVAE(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=5)
     elif netG == 'transformer':
-        net = ViTGenerator(image_size=256)
+        net = ViTGenerator()
     elif netG == 'unet_128':
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == 'unet_256':
@@ -1418,12 +1418,20 @@ class SineLayer(nn.Module):
 class ViTGenerator(nn.Module):
     def __init__(
         self,
-        image_size=256,
-        patch_size=16,
-        in_channels=3,
+        input_nc=3,
+        output_nc=3, 
+        ngf=64, 
+        norm_layer=nn.BatchNorm2d, 
+        use_dropout=False, 
+        n_blocks=3, 
+        padding_type='reflect', 
+        no_antialias=False, 
+        no_antialias_up=False, 
+        opt=None,
+
         embedding_dim=768,
-        num_layers=12,
-        num_heads=12,
+        num_layers=6,
+        num_heads=8,
         qkv_bias=True,
         mlp_ratio=4.0,
         use_revised_ffn=False,
@@ -1436,13 +1444,42 @@ class ViTGenerator(nn.Module):
         use_stem_scaled_relu=False,
         hidden_dims=None,
     ):
+        assert(n_blocks >= 0)
         super(ViTGenerator, self).__init__()
+        self.opt = opt
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        model_down = [nn.ReflectionPad2d(3),
+                 nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias),
+                 norm_layer(ngf),
+                 nn.ReLU(True)]
+
+        n_downsampling = 2
+        for i in range(n_downsampling):  # add downsampling layers
+            mult = 2 ** i
+            if(no_antialias):
+                model_down += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                          norm_layer(ngf * mult * 2),
+                          nn.ReLU(True)]
+            else:
+                model_down += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=1, padding=1, bias=use_bias),
+                          norm_layer(ngf * mult * 2),
+                          nn.ReLU(True),
+                          Downsample(ngf * mult * 2)]
+
+        mult = 2 ** n_downsampling
+        for i in range(n_blocks):       # add ResNet blocks
+            model_down += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+        self.model_down = nn.Sequential(*model_down)
 
         # embedding layer
         self.embedding_layer = EmbeddingStem(
-            image_size=image_size,
-            patch_size=patch_size,
-            channels=in_channels,
+            image_size=64,
+            patch_size=8,
+            channels=ngf * mult,
             embedding_dim=embedding_dim,
             hidden_dims=hidden_dims,
             conv_patch=use_conv_patch,
@@ -1466,14 +1503,54 @@ class ViTGenerator(nn.Module):
             revised=use_revised_ffn,
         )
         self.post_transformer_ln = nn.LayerNorm(embedding_dim)
+        n1 = nn.Linear(embedding_dim, embedding_dim * 2)
+        n2 = nn.Linear(embedding_dim * 2, ngf * mult * 8 * 8)
+        with torch.no_grad():
+            n1.weight.uniform_(-1 / embedding_dim, 1 / embedding_dim)
+            n2.weight.uniform_(-1 / (embedding_dim * 2), 1 / (embedding_dim * 2))
         self.w_out = nn.Sequential(
-            SineLayer(embedding_dim, embedding_dim * 2, is_first = True, omega_0 = 30.),
-            # TODO
-            SineLayer(embedding_dim * 2, in_channels * 16 * 16, is_first = False, omega_0 = 30)
+            n1,
+            nn.ReLU(True),
+            n2
         )
 
+        model_up = []
+        for i in range(n_blocks):       # add ResNet blocks
+            model_down += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+
+        for i in range(n_downsampling):  # add upsampling layers
+            mult = 2 ** (n_downsampling - i)
+            if no_antialias_up:
+                model_up += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
+                                             kernel_size=3, stride=2,
+                                             padding=1, output_padding=1,
+                                             bias=use_bias),
+                          norm_layer(int(ngf * mult / 2)),
+                          nn.ReLU(True)]
+            else:
+                model_up += [Upsample(ngf * mult),
+                          nn.Conv2d(ngf * mult, int(ngf * mult / 2),
+                                    kernel_size=3, stride=1,
+                                    padding=1,  # output_padding=1,
+                                    bias=use_bias),
+                          norm_layer(int(ngf * mult / 2)),
+                          nn.ReLU(True)]
+        model_up += [nn.ReflectionPad2d(3)]
+        model_up += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
+        model_up += [nn.Tanh()]
+        self.model_up = nn.Sequential(*model_up)
+
+    def init_weights(self):
+        with torch.no_grad():
+            if self.is_first:
+                self.linear.weight.uniform_(-1 / self.in_features, 1 / self.in_features)
+            else:
+                self.linear.weight.uniform_(-np.sqrt(6 / self.in_features) / self.omega_0, np.sqrt(6 / self.in_features) / self.omega_0)
+
     def forward(self, x, layers = [], encode_only: bool = False):
+        x = self.model_down(x)
         x = self.embedding_layer(x)
+
         features = []
         if encode_only:
             assert len(layers) > 0
@@ -1485,10 +1562,11 @@ class ViTGenerator(nn.Module):
                 x = self.transformer(x)
         x = self.post_transformer_ln(x)
         x = self.w_out(x)
-        # TODO
-        x = x.permute(0, 2, 1)
-        x = F.fold(x, output_size=(256, 256), kernel_size=(16,16), stride=(16,16))
 
+        x = x.permute(0, 2, 1)
+        x = F.fold(x, output_size=64, kernel_size=8, stride=8)
+
+        x = self.model_up(x)
         if len(features) > 0:
             return x, features
         else:
