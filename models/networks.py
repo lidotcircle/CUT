@@ -559,6 +559,13 @@ class PatchSampleF(nn.Module):
         self.mlp_init = True
 
     def forward(self, feats, num_patches=64, patch_ids=None):
+        for feat_id, feat in enumerate(feats):
+            if len(feat.shape) == 4:
+                _, _, H, W = feat.shape
+                feat = F.unfold(feat, kernel_size=(H // 16, W // 16), stride=(H // 16, W // 16))
+                feat = feat.permute(0, 2, 1).contiguous()
+                feats[feat_id] = feat
+
         assert num_patches > 0
         return_ids = []
         return_feats = []
@@ -1452,23 +1459,23 @@ class ViTGenerator(nn.Module):
         else:
             use_bias = norm_layer == nn.InstanceNorm2d
 
-        model_down = [nn.ReflectionPad2d(3),
+        model_down = [nn.Sequential(nn.ReflectionPad2d(3),
                  nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias),
                  norm_layer(ngf),
-                 nn.ReLU(True)]
+                 nn.ReLU(True))]
 
         n_downsampling = 2
         for i in range(n_downsampling):  # add downsampling layers
             mult = 2 ** i
             if(no_antialias):
-                model_down += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                model_down += [nn.Sequential(nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
                           norm_layer(ngf * mult * 2),
-                          nn.ReLU(True)]
+                          nn.ReLU(True))]
             else:
-                model_down += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=1, padding=1, bias=use_bias),
+                model_down += [nn.Sequential(nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=1, padding=1, bias=use_bias),
                           norm_layer(ngf * mult * 2),
                           nn.ReLU(True),
-                          Downsample(ngf * mult * 2)]
+                          Downsample(ngf * mult * 2))]
 
         mult = 2 ** n_downsampling
         for i in range(n_blocks):       # add ResNet blocks
@@ -1515,29 +1522,30 @@ class ViTGenerator(nn.Module):
         )
 
         model_up = []
+        ngf2 = ngf  * 2
         for i in range(n_blocks):       # add ResNet blocks
-            model_down += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+            model_down += [ResnetBlock(ngf2 * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
 
         for i in range(n_downsampling):  # add upsampling layers
             mult = 2 ** (n_downsampling - i)
             if no_antialias_up:
-                model_up += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
+                model_up += [nn.Sequential(nn.ConvTranspose2d(ngf2 * mult, int(ngf2 * mult / 2),
                                              kernel_size=3, stride=2,
                                              padding=1, output_padding=1,
                                              bias=use_bias),
-                          norm_layer(int(ngf * mult / 2)),
-                          nn.ReLU(True)]
+                          norm_layer(int(ngf2 * mult / 2)),
+                          nn.ReLU(True))]
             else:
-                model_up += [Upsample(ngf * mult),
-                          nn.Conv2d(ngf * mult, int(ngf * mult / 2),
+                model_up += [nn.Sequential(Upsample(ngf2 * mult),
+                          nn.Conv2d(ngf2 * mult, int(ngf2 * mult / 2),
                                     kernel_size=3, stride=1,
                                     padding=1,  # output_padding=1,
                                     bias=use_bias),
-                          norm_layer(int(ngf * mult / 2)),
-                          nn.ReLU(True)]
-        model_up += [nn.ReflectionPad2d(3)]
-        model_up += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
-        model_up += [nn.Tanh()]
+                          norm_layer(int(ngf2 * mult / 2)),
+                          nn.ReLU(True))]
+        model_up += [nn.Sequential(nn.ReflectionPad2d(3),
+                nn.Conv2d(ngf2, output_nc, kernel_size=7, padding=0),
+                nn.Tanh())]
         self.model_up = nn.Sequential(*model_up)
 
     def init_weights(self):
@@ -1547,29 +1555,51 @@ class ViTGenerator(nn.Module):
             else:
                 self.linear.weight.uniform_(-np.sqrt(6 / self.in_features) / self.omega_0, np.sqrt(6 / self.in_features) / self.omega_0)
 
-    def forward(self, x, layers = [], encode_only: bool = False):
-        x = self.model_down(x)
-        x = self.embedding_layer(x)
+    def forward(self, x, layers = [], features = [], encode_only: bool = False):
+        features = features or []
+        last_layer = -1
+        if len(layers) > 0:
+            last_layer = layers[-1]
+            assert last_layer > 0
+        
+        def get_features():
+            f = []
+            for l in layers:
+                f.append(features[l])
+            return f
 
-        features = []
-        if encode_only:
-            assert len(layers) > 0
-            return self.transformer(x, layers, encode_only)
+        if len(layers) > 0:
+            for _, layer in enumerate(self.model_down):
+                x = layer(x)
+                features.append(x)
+                if encode_only and len(features) > last_layer:
+                    return get_features()
+            x_copy = x
+            x = self.embedding_layer(x)
+            x = self.transformer(x, features=features)
+            if encode_only and len(features) > last_layer:
+                return get_features()
         else:
-            if len(layers) > 0:
-                x, features = self.transformer(x, layers)
-            else:
-                x = self.transformer(x)
+            x = self.model_down(x)
+            x_copy = x
+            x = self.embedding_layer(x)
+            x = self.transformer(x)
+
         x = self.post_transformer_ln(x)
         x = self.w_out(x)
-
         x = x.permute(0, 2, 1)
         x = F.fold(x, output_size=64, kernel_size=8, stride=8)
+        x = torch.cat([x, x_copy], dim=1)
 
-        x = self.model_up(x)
-        if len(features) > 0:
-            return x, features
+        if len(layers) > 0:
+            for _, layer in enumerate(self.model_up):
+                x = layer(x)
+                features.append(x)
+                if encode_only and len(features) > last_layer:
+                    return get_features()
+            return x, get_features()
         else:
+            x = self.model_up(x)
             return x
 
 

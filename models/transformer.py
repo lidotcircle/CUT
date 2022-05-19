@@ -48,24 +48,11 @@ class Transformer(nn.Module):
                 )
             )
 
-    def forward(self, x, layers = [], encode_only: bool = False):
-        added = 0
-        layerid = 0
-        features = []
+    def forward(self, x, features = []):
+        features = features or []
         for attn, ff in self.layers:
             x = attn(x) + x
             x = ff(x) + x
-            if layerid in layers:
-                features.append(x)
-                added = added + 1
-            if encode_only and added == len(layers):
-                break
-            layerid = layerid + 1
+            features.append(x)
         
-        if len(layers) > 0:
-            if encode_only:
-                return features
-            else:
-                return x, features
-
         return x
