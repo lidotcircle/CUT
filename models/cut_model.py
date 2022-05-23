@@ -26,7 +26,7 @@ class CUTModel(BaseModel):
         parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss：GAN(G(X))')
         parser.add_argument('--lambda_NCE', type=float, default=default_lambda_NCE, help='weight for NCE loss: NCE(G(X), X)')
         parser.add_argument('--nce_idt', type=util.str2bool, nargs='?', const=True, default=False, help='use NCE loss for identity mapping: NCE(G(Y), Y))')
-        parser.add_argument('--nce_layers', type=str, default='0,3,6,9,11', help='compute NCE loss on which layers')
+        parser.add_argument('--nce_layers', type=str, default='2,4,7,9,12,14', help='compute NCE loss on which layers')
         parser.add_argument('--nce_includes_all_negatives_from_minibatch',
                             type=util.str2bool, nargs='?', const=True, default=False,
                             help='(used for single image translation) If True, include the negatives from the other samples of the minibatch when computing the contrastive loss. Please see models/patchnce.py for more details.')
