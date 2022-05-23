@@ -329,6 +329,8 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal'
         net = NLayerDiscriminator(input_nc, ndf, n_layers=3, norm_layer=norm_layer, no_antialias=no_antialias,)
     elif netD == 'n_layers':  # more options
         net = NLayerDiscriminator(input_nc, ndf, n_layers_D, norm_layer=norm_layer, no_antialias=no_antialias,)
+    elif netD == 'mlp':
+        net = MLPDiscriminator()
     elif netD == 'pixel':     # classify if each pixel is real or fake
         net = PixelDiscriminator(input_nc, ndf, norm_layer=norm_layer)
     elif 'stylegan2' in netD:
@@ -1565,7 +1567,8 @@ class ViTGenerator(nn.Module):
         def get_features():
             f = []
             for l in layers:
-                f.append(features[l])
+                if l < len(features):
+                    f.append(features[l])
             return f
 
         if len(layers) > 0:
@@ -1597,7 +1600,10 @@ class ViTGenerator(nn.Module):
                 features.append(x)
                 if encode_only and len(features) > last_layer:
                     return get_features()
-            return x, get_features()
+            if encode_only:
+                return get_features()
+            else:
+                return x, get_features()
         else:
             x = self.model_up(x)
             return x
@@ -1761,6 +1767,25 @@ class NLayerDiscriminator(nn.Module):
     def forward(self, input):
         """Standard forward."""
         return self.model(input)
+
+
+class MLPDiscriminator(nn.Module):
+    def __init__(
+        self, 
+        layers = 5, in_features = 3 * 16 * 16):
+        super(MLPDiscriminator, self).__init__()
+        models = []
+        for _ in range(layers):
+            models.append(nn.Linear(in_features, in_features))
+            models.append(nn.LeakyReLU(negative_slope=0.01))
+        models.append(nn.Linear(in_features, 1))
+        self.model = nn.Sequential(*models)
+
+    def forward(self, image):
+        x = F.unfold(image, kernel_size=16, stride=16)
+        x = x.permute(0, 2, 1).contiguous()
+        x = x.view(-1, x.size(2))
+        return self.model(x)
 
 
 class PixelDiscriminator(nn.Module):

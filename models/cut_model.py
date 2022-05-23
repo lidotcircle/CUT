@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 from .base_model import BaseModel
 from . import networks
 from .patchnce import PatchNCELoss
@@ -61,7 +62,7 @@ class CUTModel(BaseModel):
 
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', 'NCE']
+        self.loss_names = ['G_GAN', "G_GAN2", 'D_real', 'D_fake', "D2_real", "D2_fake", 'G', 'NCE']
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         self.nce_layers = [int(i) for i in self.opt.nce_layers.split(',')]
 
@@ -70,7 +71,7 @@ class CUTModel(BaseModel):
             self.visual_names += ['idt_B']
 
         if self.isTrain:
-            self.model_names = ['G', 'F', 'D']
+            self.model_names = ['G', 'F', 'D', 'D2']
         else:  # during test time, only load G
             self.model_names = ['G']
 
@@ -80,6 +81,7 @@ class CUTModel(BaseModel):
 
         if self.isTrain:
             self.netD = networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.normD, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
+            self.netD2 = networks.define_D(0, 0, 'mlp', gpu_ids=self.gpu_ids)
 
             # define loss functions
             self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)
@@ -91,8 +93,10 @@ class CUTModel(BaseModel):
             self.criterionIdt = torch.nn.L1Loss().to(self.device)
             self.optimizer_G = torch.optim.Adam(self.netG.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
+            self.optimizer_D2 = torch.optim.Adam(self.netD2.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizers.append(self.optimizer_G)
             self.optimizers.append(self.optimizer_D)
+            self.optimizers.append(self.optimizer_D2)
 
     def data_dependent_initialize(self, data):
         """
@@ -123,6 +127,13 @@ class CUTModel(BaseModel):
         self.loss_D = self.compute_D_loss()
         self.loss_D.backward()
         self.optimizer_D.step()
+
+        # update D2
+        self.set_requires_grad(self.netD2, True)
+        self.optimizer_D2.zero_grad()
+        self.loss_D2 = self.compute_D2_loss()
+        self.loss_D2.backward()
+        self.optimizer_D2.step()
 
         # update G
         self.set_requires_grad(self.netD, False)
@@ -183,6 +194,19 @@ class CUTModel(BaseModel):
         self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5
         return self.loss_D
 
+    def compute_D2_loss(self):
+        fake = self.fake_B.detach()
+        # Fake; stop backprop to the generator by detaching fake_B
+        pred_fake = self.netD2(fake)
+        self.loss_D2_fake = self.criterionGAN(pred_fake, False).mean()
+        # Real
+        pred_real = self.netD2(self.real)
+        self.loss_D2_real = self.criterionGAN(pred_real, True).mean()
+
+        # combine loss and calculate gradients
+        self.loss_D2 = (self.loss_D2_fake + self.loss_D2_real) * 0.5
+        return self.loss_D2
+
     def compute_G_loss(self):
         """Calculate GAN and NCE loss for the generator"""
         fake = self.fake_B
@@ -191,8 +215,11 @@ class CUTModel(BaseModel):
         if self.opt.lambda_GAN > 0.0:
             pred_fake = self.netD(fake)
             self.loss_G_GAN = self.criterionGAN(pred_fake, True).mean() * self.opt.lambda_GAN
+            pred_fake2 = self.netD2(fake)
+            self.loss_G_GAN2 = self.criterionGAN(pred_fake2, True).mean() * self.opt.lambda_GAN
         else:
             self.loss_G_GAN = 0.0
+            self.loss_G_GAN2 = 0.0
 
         if self.opt.lambda_NCE > 0.0:
             self.loss_NCE = self.calculate_NCE_loss(self.real_A, self.fake_B)
@@ -205,7 +232,7 @@ class CUTModel(BaseModel):
         else:
             loss_NCE_both = self.loss_NCE
 
-        self.loss_G = self.loss_G_GAN + loss_NCE_both
+        self.loss_G = self.loss_G_GAN + self.loss_G_GAN2 + loss_NCE_both
         return self.loss_G
 
     def calculate_NCE_loss(self, src, tgt):
