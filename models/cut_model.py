@@ -25,6 +25,7 @@ class CUTModel(BaseModel):
 
         default_lambda_NCE = 1.0
         parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss：GAN(G(X))')
+        parser.add_argument('--lambda_GAN2', type=float, default=0.0, help='weight for GAN loss：GAN(G(X))')
         parser.add_argument('--lambda_NCE', type=float, default=default_lambda_NCE, help='weight for NCE loss: NCE(G(X), X)')
         parser.add_argument('--nce_idt', type=util.str2bool, nargs='?', const=True, default=False, help='use NCE loss for identity mapping: NCE(G(Y), Y))')
         parser.add_argument('--nce_layers', type=str, default='2,4,7,9,12,14', help='compute NCE loss on which layers')
@@ -129,11 +130,16 @@ class CUTModel(BaseModel):
         self.optimizer_D.step()
 
         # update D2
-        self.set_requires_grad(self.netD2, True)
-        self.optimizer_D2.zero_grad()
-        self.loss_D2 = self.compute_D2_loss()
-        self.loss_D2.backward()
-        self.optimizer_D2.step()
+        if self.opt.lambda_GAN2 > 0:
+            self.set_requires_grad(self.netD2, True)
+            self.optimizer_D2.zero_grad()
+            self.loss_D2 = self.compute_D2_loss()
+            self.loss_D2.backward()
+            self.optimizer_D2.step()
+        else:
+            self.loss_D2_real = 0
+            self.loss_D2_fake = 0
+            self.loss_D2 = 0
 
         # update G
         self.set_requires_grad(self.netD, False)
@@ -215,10 +221,13 @@ class CUTModel(BaseModel):
         if self.opt.lambda_GAN > 0.0:
             pred_fake = self.netD(fake)
             self.loss_G_GAN = self.criterionGAN(pred_fake, True).mean() * self.opt.lambda_GAN
-            pred_fake2 = self.netD2(fake)
-            self.loss_G_GAN2 = self.criterionGAN(pred_fake2, True).mean() * self.opt.lambda_GAN
         else:
             self.loss_G_GAN = 0.0
+
+        if self.opt.lambda_GAN2 > 0.0:
+            pred_fake2 = self.netD2(fake)
+            self.loss_G_GAN2 = self.criterionGAN(pred_fake2, True).mean() * self.opt.lambda_GAN2
+        else:
             self.loss_G_GAN2 = 0.0
 
         if self.opt.lambda_NCE > 0.0:
