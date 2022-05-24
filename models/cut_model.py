@@ -280,7 +280,7 @@ class CUTModel(BaseModel):
         self.loss_S_pos = -self.netS(pos).mean()
         self.loss_S_neg = self.netS(neg).mean()
         self.loss_S_GP = self.compute_gradient_penalty(self.netS, pos, neg)
-        return (self.loss_S_pos + self.loss_S_neg) + self.loss_S_GP * 10
+        return (self.loss_S_pos + self.loss_S_neg + self.loss_S_GP * 10) * ( 1 / max(1, (self.get_epoch() - 15)))
 
     def compute_G_loss(self):
         """Calculate GAN and NCE loss for the generator"""
