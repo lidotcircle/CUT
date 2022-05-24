@@ -292,6 +292,16 @@ def define_F(input_nc, netF, norm='batch', use_dropout=False, init_type='normal'
     return init_net(net, init_type, init_gain, gpu_ids)
 
 
+def define_S(netS, init_type='normal', init_gain=0.02, gpu_ids=[], opt=None):
+    net = None
+
+    if netS == 'basic':  # default PatchGAN classifier
+        net = ResnetSimilarity(input_nc=6)
+    else:
+        raise NotImplementedError('model name [%s] is not recognized' % netS)
+    return init_net(net, init_type, init_gain, gpu_ids, initialize_weights=True)
+
+
 def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal', init_gain=0.02, no_antialias=False, gpu_ids=[], opt=None):
     """Create a discriminator
 
@@ -1767,6 +1777,50 @@ class NLayerDiscriminator(nn.Module):
     def forward(self, input):
         """Standard forward."""
         return self.model(input)
+
+
+class ResnetSimilarity(nn.Module):
+    def __init__(self, input_nc, ngf=64, norm_layer=nn.InstanceNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect'):
+        assert(n_blocks >= 0)
+        super(ResnetSimilarity, self).__init__()
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        model = [nn.ReflectionPad2d(3),
+                 nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias),
+                 norm_layer(ngf),
+                 nn.ReLU(True)]
+
+        n_downsampling = 2
+        for i in range(n_downsampling):  # add downsampling layers
+            mult = 2 ** i
+            model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                        norm_layer(ngf * mult * 2),
+                        nn.ReLU(True)]
+
+        channels = 2 ** n_downsampling * ngf
+        for i in range(n_blocks // 2):       # add ResNet blocks
+            model += [ResnetBlock(channels, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+
+        for i in range(2):  # add downsampling layers
+            model += [nn.Conv2d(channels, channels, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                        norm_layer(channels),
+                        nn.ReLU(True)]
+
+        for i in range(n_blocks // 2):       # add ResNet blocks
+            model += [ResnetBlock(channels, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+
+        model += [nn.AvgPool2d(kernel_size=8, stride=8)]
+
+        self.model = nn.Sequential(*model)
+        self.linear_out = nn.Linear(channels, 1)
+
+    def forward(self, input):
+        x = self.model(input)
+        x = x.view(x.size(0), -1)
+        return self.linear_out(x)
 
 
 class MLPDiscriminator(nn.Module):

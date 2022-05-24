@@ -23,12 +23,13 @@ class CUTModel(BaseModel):
         """
         parser.add_argument('--CUT_mode', type=str, default="CUT", choices='(CUT, cut, FastCUT, fastcut)')
 
-        default_lambda_NCE = 1.0
+        default_lambda_NCE = 0.0
         parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss：GAN(G(X))')
         parser.add_argument('--lambda_GAN2', type=float, default=0.0, help='weight for GAN loss：GAN(G(X))')
+        parser.add_argument('--lambda_SIM', type=float, default=1.0, help='weight for similarity loss')
         parser.add_argument('--lambda_NCE', type=float, default=default_lambda_NCE, help='weight for NCE loss: NCE(G(X), X)')
         parser.add_argument('--nce_idt', type=util.str2bool, nargs='?', const=True, default=False, help='use NCE loss for identity mapping: NCE(G(Y), Y))')
-        parser.add_argument('--nce_layers', type=str, default='2,4,7,9,12,14', help='compute NCE loss on which layers')
+        parser.add_argument('--nce_layers', type=str, default='0,3,6,9,12', help='compute NCE loss on which layers')
         parser.add_argument('--nce_includes_all_negatives_from_minibatch',
                             type=util.str2bool, nargs='?', const=True, default=False,
                             help='(used for single image translation) If True, include the negatives from the other samples of the minibatch when computing the contrastive loss. Please see models/patchnce.py for more details.')
@@ -63,7 +64,7 @@ class CUTModel(BaseModel):
 
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_GAN', "G_GAN2", 'D_real', 'D_fake', "D2_real", "D2_fake", 'G', 'NCE']
+        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', "SIM", "S", "S_pos", "S_neg", "S_GP"]
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         self.nce_layers = [int(i) for i in self.opt.nce_layers.split(',')]
 
@@ -72,13 +73,14 @@ class CUTModel(BaseModel):
             self.visual_names += ['idt_B']
 
         if self.isTrain:
-            self.model_names = ['G', 'F', 'D', 'D2']
+            self.model_names = ['G', 'F', 'D', 'D2', 'S']
         else:  # during test time, only load G
             self.model_names = ['G']
 
         # define networks (both generator and discriminator)
         self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.normG, not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias, opt.no_antialias_up, self.gpu_ids, opt)
         self.netF = networks.define_F(opt.input_nc, opt.netF, opt.normG, not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
+        self.netS = networks.define_S(netS='basic', gpu_ids=self.gpu_ids)
 
         if self.isTrain:
             self.netD = networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.normD, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
@@ -95,9 +97,11 @@ class CUTModel(BaseModel):
             self.optimizer_G = torch.optim.Adam(self.netG.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizer_D2 = torch.optim.Adam(self.netD2.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
+            self.optimizer_S = torch.optim.Adam(self.netS.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizers.append(self.optimizer_G)
             self.optimizers.append(self.optimizer_D)
             self.optimizers.append(self.optimizer_D2)
+            self.optimizers.append(self.optimizer_S)
 
     def data_dependent_initialize(self, data):
         """
@@ -140,6 +144,18 @@ class CUTModel(BaseModel):
             self.loss_D2_real = 0
             self.loss_D2_fake = 0
             self.loss_D2 = 0
+
+        # update S
+        if self.opt.lambda_SIM > 0:
+            self.set_requires_grad(self.netS, True)
+            self.optimizer_S.zero_grad()
+            self.loss_S = self.compute_S_loss()
+            self.loss_S.backward()
+            self.optimizer_S.step()
+        else:
+            self.loss_S_pos = 0
+            self.loss_S_neg = 0
+            self.loss_S = 0
 
         # update G
         self.set_requires_grad(self.netD, False)
@@ -213,6 +229,59 @@ class CUTModel(BaseModel):
         self.loss_D2 = (self.loss_D2_fake + self.loss_D2_real) * 0.5
         return self.loss_D2
 
+    def getNoSelfIdx(self, max, ma):
+        ma = min(max - 1, ma)
+        ans = []
+        for i in range(max):
+            n = []
+            for j in range(max):
+                if i == j:
+                    continue
+                n.append(j)
+            ans.append(np.random.choice(n, ma))
+        return ans
+
+    def get_patches(self, img):
+        img = F.unfold(img, kernel_size=128, stride=128)
+        img = img.view(img.size(0), 3, 128, 128, -1)
+        img = img.permute(0, 4, 1, 2, 3).contiguous()
+        img = img.view(-1, 3, 128, 128)
+        return img
+
+    def compute_gradient_penalty(self, S, pos, neg):
+        device = pos.get_device()
+        # Random weight term for interpolation between real and fake samples
+        alpha = torch.Tensor(np.random.random((pos.size(0), 1, 1, 1))).to(device)
+        # Get random interpolation between real and fake samples
+        interpolates = (alpha * pos + ((1 - alpha) * neg)).requires_grad_(True)
+        d_interpolates = S(interpolates)
+        vn = torch.autograd.Variable(torch.Tensor(pos.shape[0], 1).to(device).fill_(1.0), requires_grad=False)
+        # Get gradient w.r.t. interpolates
+        gradients = torch.autograd.grad(
+            outputs=d_interpolates,
+            inputs=interpolates,
+            grad_outputs=vn,
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True,
+        )[0]
+        gradients = gradients.view(gradients.size(0), -1)
+        gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+        return gradient_penalty
+            
+    def compute_S_loss(self):
+        fake = self.fake_B.detach()
+        real = self.real
+        fake = self.get_patches(fake)
+        real = self.get_patches(real)
+        unaligned_fake = fake[list(map(lambda v: v[0], self.getNoSelfIdx(fake.size(0), 1)))]
+        pos = torch.cat([real, fake], dim=1)
+        neg = torch.cat([real, unaligned_fake], dim=1)
+        self.loss_S_pos = -self.netS(pos).mean()
+        self.loss_S_neg = self.netS(neg).mean()
+        self.loss_S_GP = self.compute_gradient_penalty(self.netS, pos, neg)
+        return (self.loss_S_pos + self.loss_S_neg) * self.opt.lambda_SIM + self.loss_S_GP * 10
+
     def compute_G_loss(self):
         """Calculate GAN and NCE loss for the generator"""
         fake = self.fake_B
@@ -223,6 +292,14 @@ class CUTModel(BaseModel):
             self.loss_G_GAN = self.criterionGAN(pred_fake, True).mean() * self.opt.lambda_GAN
         else:
             self.loss_G_GAN = 0.0
+
+        if self.opt.lambda_SIM > 0.0:
+            r1 = self.get_patches(self.real)
+            f1 = self.get_patches(fake)
+            px = torch.cat([r1, f1], dim=1)
+            self.loss_SIM = -self.netS(px).mean()
+        else:
+            self.loss_SIM = 0
 
         if self.opt.lambda_GAN2 > 0.0:
             pred_fake2 = self.netD2(fake)
@@ -241,7 +318,7 @@ class CUTModel(BaseModel):
         else:
             loss_NCE_both = self.loss_NCE
 
-        self.loss_G = self.loss_G_GAN + self.loss_G_GAN2 + loss_NCE_both
+        self.loss_G = self.loss_G_GAN + self.loss_G_GAN2 + loss_NCE_both + self.loss_SIM
         return self.loss_G
 
     def calculate_NCE_loss(self, src, tgt):
