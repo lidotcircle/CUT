@@ -86,6 +86,12 @@ class BaseModel(ABC):
         """Calculate losses, gradients, and update network weights; called in every training iteration"""
         pass
 
+    def set_epoch(self, epoch):
+        self.epoch = epoch
+    
+    def get_epoch(self):
+        return self.epoch
+
     def setup(self, opt):
         """Load and print networks; create schedulers
 

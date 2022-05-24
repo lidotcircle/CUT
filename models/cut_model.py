@@ -318,7 +318,7 @@ class CUTModel(BaseModel):
         else:
             loss_NCE_both = self.loss_NCE
 
-        self.loss_G = self.loss_G_GAN + self.loss_G_GAN2 + loss_NCE_both + self.loss_SIM
+        self.loss_G = self.loss_G_GAN + self.loss_G_GAN2 + loss_NCE_both + self.loss_SIM * (1 / max(1, self.get_epoch()))
         return self.loss_G
 
     def calculate_NCE_loss(self, src, tgt):
