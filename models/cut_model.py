@@ -280,7 +280,7 @@ class CUTModel(BaseModel):
         self.loss_S_pos = -self.netS(pos).mean()
         self.loss_S_neg = self.netS(neg).mean()
         self.loss_S_GP = self.compute_gradient_penalty(self.netS, pos, neg)
-        return (self.loss_S_pos + self.loss_S_neg) * self.opt.lambda_SIM + self.loss_S_GP * 10
+        return (self.loss_S_pos + self.loss_S_neg) + self.loss_S_GP * 10
 
     def compute_G_loss(self):
         """Calculate GAN and NCE loss for the generator"""
@@ -297,7 +297,7 @@ class CUTModel(BaseModel):
             r1 = self.get_patches(self.real)
             f1 = self.get_patches(fake)
             px = torch.cat([r1, f1], dim=1)
-            self.loss_SIM = -self.netS(px).mean()
+            self.loss_SIM = -self.netS(px).mean() * self.opt.lambda_SIM
         else:
             self.loss_SIM = 0
 
