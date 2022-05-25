@@ -1815,12 +1815,12 @@ class ResnetSimilarity(nn.Module):
         model += [nn.AvgPool2d(kernel_size=8, stride=8)]
 
         self.model = nn.Sequential(*model)
-        self.linear_out = nn.Linear(channels, 1)
+        self.out = nn.Sequential(SineLayer(channels, channels * 2, is_first=True), SineLayer(channels * 2, 1))
 
     def forward(self, input):
         x = self.model(input)
         x = x.view(x.size(0), -1)
-        return self.linear_out(x)
+        return self.out(x)
 
 
 class MLPDiscriminator(nn.Module):
