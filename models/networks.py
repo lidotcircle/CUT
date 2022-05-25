@@ -5,7 +5,11 @@ from torch.nn import init
 import functools
 from torch.optim import lr_scheduler
 import numpy as np
+
 from .stylegan_networks import StyleGAN2Discriminator, StyleGAN2Generator, TileStyleGAN2Discriminator
+from .patch_embed import EmbeddingStem, Tokens2Image
+from .transformer import Transformer
+
 
 ###############################################################################
 # Helper Functions
@@ -254,6 +258,8 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=4, opt=opt)
     elif netG == 'resnetvae_5blocks':
         net = ResnetVAE(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=5)
+    elif netG == 'transformer':
+        net = ViTGenerator()
     elif netG == 'unet_128':
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == 'unet_256':
@@ -284,6 +290,16 @@ def define_F(input_nc, netF, norm='batch', use_dropout=False, init_type='normal'
     else:
         raise NotImplementedError('projection model name [%s] is not recognized' % netF)
     return init_net(net, init_type, init_gain, gpu_ids)
+
+
+def define_S(netS, init_type='normal', init_gain=0.02, gpu_ids=[], opt=None):
+    net = None
+
+    if netS == 'basic':  # default PatchGAN classifier
+        net = ResnetSimilarity(input_nc=6)
+    else:
+        raise NotImplementedError('model name [%s] is not recognized' % netS)
+    return init_net(net, init_type, init_gain, gpu_ids, initialize_weights=True)
 
 
 def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal', init_gain=0.02, no_antialias=False, gpu_ids=[], opt=None):
@@ -323,6 +339,8 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal'
         net = NLayerDiscriminator(input_nc, ndf, n_layers=3, norm_layer=norm_layer, no_antialias=no_antialias,)
     elif netD == 'n_layers':  # more options
         net = NLayerDiscriminator(input_nc, ndf, n_layers_D, norm_layer=norm_layer, no_antialias=no_antialias,)
+    elif netD == 'mlp':
+        net = MLPDiscriminator()
     elif netD == 'pixel':     # classify if each pixel is real or fake
         net = PixelDiscriminator(input_nc, ndf, norm_layer=norm_layer)
     elif 'stylegan2' in netD:
@@ -544,7 +562,7 @@ class PatchSampleF(nn.Module):
 
     def create_mlp(self, feats):
         for mlp_id, feat in enumerate(feats):
-            input_nc = feat.shape[1]
+            input_nc = feat.shape[2]
             mlp = nn.Sequential(*[nn.Linear(input_nc, self.nc), nn.ReLU(), nn.Linear(self.nc, self.nc)])
             if len(self.gpu_ids) > 0:
                 mlp.cuda()
@@ -553,34 +571,38 @@ class PatchSampleF(nn.Module):
         self.mlp_init = True
 
     def forward(self, feats, num_patches=64, patch_ids=None):
+        for feat_id, feat in enumerate(feats):
+            if len(feat.shape) == 4:
+                _, _, H, W = feat.shape
+                feat = F.unfold(feat, kernel_size=(H // 32, W // 32), stride=(H // 32, W // 32))
+                feat = feat.permute(0, 2, 1).contiguous()
+                feats[feat_id] = feat
+
+        assert num_patches > 0
         return_ids = []
         return_feats = []
         if self.use_mlp and not self.mlp_init:
             self.create_mlp(feats)
         for feat_id, feat in enumerate(feats):
-            B, H, W = feat.shape[0], feat.shape[2], feat.shape[3]
-            feat_reshape = feat.permute(0, 2, 3, 1).flatten(1, 2)
-            if num_patches > 0:
-                if patch_ids is not None:
-                    patch_id = patch_ids[feat_id]
-                else:
-                    # torch.randperm produces cudaErrorIllegalAddress for newer versions of PyTorch. https://github.com/taesungp/contrastive-unpaired-translation/issues/83
-                    #patch_id = torch.randperm(feat_reshape.shape[1], device=feats[0].device)
-                    patch_id = np.random.permutation(feat_reshape.shape[1])
-                    patch_id = patch_id[:int(min(num_patches, patch_id.shape[0]))]  # .to(patch_ids.device)
-                patch_id = torch.tensor(patch_id, dtype=torch.long, device=feat.device)
-                x_sample = feat_reshape[:, patch_id, :].flatten(0, 1)  # reshape(-1, x.shape[1])
+            _, N, _ = feat.shape
+            feat_reshape = feat
+
+            if patch_ids is not None:
+                patch_id = patch_ids[feat_id]
             else:
-                x_sample = feat_reshape
-                patch_id = []
+                # torch.randperm produces cudaErrorIllegalAddress for newer versions of PyTorch. https://github.com/taesungp/contrastive-unpaired-translation/issues/83
+                #patch_id = torch.randperm(feat_reshape.shape[1], device=feats[0].device)
+                patch_id = np.random.permutation(N)
+                patch_id = patch_id[:int(min(num_patches, N))]  # .to(patch_ids.device)
+            patch_id = torch.tensor(patch_id, dtype=torch.long, device=feat.device)
+            x_sample = feat_reshape[:, patch_id, :].flatten(0, 1)  # reshape(-1, x.shape[1])
+
             if self.use_mlp:
                 mlp = getattr(self, 'mlp_%d' % feat_id)
                 x_sample = mlp(x_sample)
             return_ids.append(patch_id)
             x_sample = self.l2norm(x_sample)
 
-            if num_patches == 0:
-                x_sample = x_sample.permute(0, 2, 1).reshape([B, x_sample.shape[-1], H, W])
             return_feats.append(x_sample)
         return return_feats, return_ids
 
@@ -1293,6 +1315,310 @@ class ResnetBlock(nn.Module):
         return out
 
 
+class ViTEncoder(nn.Module):
+    def __init__(
+        self,
+        image_size=256,
+        patch_size=16,
+        in_channels=3,
+        embedding_dim=768,
+        num_layers=12,
+        num_heads=12,
+        qkv_bias=True,
+        mlp_ratio=4.0,
+        use_revised_ffn=False,
+        dropout_rate=0.0,
+        attn_dropout_rate=0.0,
+        use_conv_stem=True,
+        use_conv_patch=False,
+        use_linear_patch=False,
+        use_conv_stem_original=True,
+        use_stem_scaled_relu=False,
+        hidden_dims=None,
+        cls_head=False,
+    ):
+        super(ViTEncoder, self).__init__()
+
+        # embedding layer
+        self.embedding_layer = EmbeddingStem(
+            image_size=image_size,
+            patch_size=patch_size,
+            channels=in_channels,
+            embedding_dim=embedding_dim,
+            hidden_dims=hidden_dims,
+            conv_patch=use_conv_patch,
+            linear_patch=use_linear_patch,
+            conv_stem=use_conv_stem,
+            conv_stem_original=use_conv_stem_original,
+            conv_stem_scaled_relu=use_stem_scaled_relu,
+            position_embedding_dropout=dropout_rate,
+            cls_head=cls_head,
+        )
+
+        # transformer
+        self.transformer = Transformer(
+            dim=embedding_dim,
+            depth=num_layers,
+            heads=num_heads,
+            mlp_ratio=mlp_ratio,
+            attn_dropout=attn_dropout_rate,
+            dropout=dropout_rate,
+            qkv_bias=qkv_bias,
+            revised=use_revised_ffn,
+        )
+        self.post_transformer_ln = nn.LayerNorm(embedding_dim)
+
+    def forward(self, x):
+        x = self.embedding_layer(x)
+        x = self.transformer(x)
+        x = self.post_transformer_ln(x)
+        return x
+
+class ViTDecoder(nn.Module):
+    def __init__(
+        self,
+        image_size=256,
+        patch_size=16,
+        in_channels=3,
+        embedding_dim=768,
+        num_layers=12,
+        num_heads=12,
+        qkv_bias=True,
+        mlp_ratio=4.0,
+        use_revised_ffn=False,
+        dropout_rate=0.0,
+        attn_dropout_rate=0.0,
+    ):
+        super(ViTDecoder, self).__init__()
+
+        # transformer
+        self.transformer = Transformer(
+            dim=embedding_dim,
+            depth=num_layers,
+            heads=num_heads,
+            mlp_ratio=mlp_ratio,
+            attn_dropout=attn_dropout_rate,
+            dropout=dropout_rate,
+            qkv_bias=qkv_bias,
+            revised=use_revised_ffn,
+        )
+        self.post_transformer_ln = nn.LayerNorm(embedding_dim)
+        self.output = Tokens2Image(image_size=image_size, patch_size=patch_size, channels=in_channels, embedding_dim=embedding_dim)
+
+    def forward(self, x):
+        x = self.transformer(x)
+        x = self.post_transformer_ln(x)
+        return self.output(x)
+
+class SineLayer(nn.Module):
+    """
+    Paper: Implicit Neural Representation with Periodic Activ ation Function (SIREN)
+    """
+    def __init__(self, in_features, out_features, bias = True,is_first = False, omega_0 = 30):
+        super().__init__()
+        self.omega_0 = omega_0
+        self.is_first = is_first
+
+        self.in_features = in_features
+        self.linear = nn.Linear(in_features, out_features, bias=bias)
+
+        self.init_weights()
+
+    def init_weights(self):
+        with torch.no_grad():
+            if self.is_first:
+                self.linear.weight.uniform_(-1 / self.in_features, 1 / self.in_features)
+            else:
+                self.linear.weight.uniform_(-np.sqrt(6 / self.in_features) / self.omega_0, np.sqrt(6 / self.in_features) / self.omega_0)
+
+    def forward(self, input):
+        return torch.sin(self.omega_0 * self.linear(input))
+
+class ViTGenerator(nn.Module):
+    def __init__(
+        self,
+        input_nc=3,
+        output_nc=3, 
+        ngf=64, 
+        norm_layer=nn.BatchNorm2d, 
+        use_dropout=False, 
+        n_blocks=3, 
+        padding_type='reflect', 
+        no_antialias=False, 
+        no_antialias_up=False, 
+        opt=None,
+
+        embedding_dim=768,
+        num_layers=6,
+        num_heads=8,
+        qkv_bias=True,
+        mlp_ratio=4.0,
+        use_revised_ffn=False,
+        dropout_rate=0.0,
+        attn_dropout_rate=0.0,
+        use_conv_stem=False,
+        use_conv_patch=False,
+        use_linear_patch=True,
+        use_conv_stem_original=True,
+        use_stem_scaled_relu=False,
+        hidden_dims=None,
+    ):
+        assert(n_blocks >= 0)
+        super(ViTGenerator, self).__init__()
+        self.opt = opt
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        model_down = [nn.Sequential(nn.ReflectionPad2d(3),
+                 nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias),
+                 norm_layer(ngf),
+                 nn.ReLU(True))]
+
+        n_downsampling = 2
+        for i in range(n_downsampling):  # add downsampling layers
+            mult = 2 ** i
+            if(no_antialias):
+                model_down += [nn.Sequential(nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                          norm_layer(ngf * mult * 2),
+                          nn.ReLU(True))]
+            else:
+                model_down += [nn.Sequential(nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=1, padding=1, bias=use_bias),
+                          norm_layer(ngf * mult * 2),
+                          nn.ReLU(True),
+                          Downsample(ngf * mult * 2))]
+
+        mult = 2 ** n_downsampling
+        for i in range(n_blocks):       # add ResNet blocks
+            model_down += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+        self.model_down = nn.Sequential(*model_down)
+
+        # embedding layer
+        self.embedding_layer = EmbeddingStem(
+            image_size=64,
+            patch_size=8,
+            channels=ngf * mult,
+            embedding_dim=embedding_dim,
+            hidden_dims=hidden_dims,
+            conv_patch=use_conv_patch,
+            linear_patch=use_linear_patch,
+            conv_stem=use_conv_stem,
+            conv_stem_original=use_conv_stem_original,
+            conv_stem_scaled_relu=use_stem_scaled_relu,
+            position_embedding_dropout=dropout_rate,
+            cls_head=False,
+        )
+
+        # transformer
+        self.transformer = Transformer(
+            dim=embedding_dim,
+            depth=num_layers,
+            heads=num_heads,
+            mlp_ratio=mlp_ratio,
+            attn_dropout=attn_dropout_rate,
+            dropout=dropout_rate,
+            qkv_bias=qkv_bias,
+            revised=use_revised_ffn,
+        )
+        self.post_transformer_ln = nn.LayerNorm(embedding_dim)
+        n1 = nn.Linear(embedding_dim, embedding_dim * 2)
+        n2 = nn.Linear(embedding_dim * 2, ngf * mult * 8 * 8)
+        with torch.no_grad():
+            n1.weight.uniform_(-1 / embedding_dim, 1 / embedding_dim)
+            n2.weight.uniform_(-1 / (embedding_dim * 2), 1 / (embedding_dim * 2))
+        self.w_out = nn.Sequential(
+            n1,
+            nn.ReLU(True),
+            n2
+        )
+
+        model_up = []
+        ngf2 = ngf  * 2
+        for i in range(n_blocks):       # add ResNet blocks
+            model_down += [ResnetBlock(ngf2 * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+
+        for i in range(n_downsampling):  # add upsampling layers
+            mult = 2 ** (n_downsampling - i)
+            if no_antialias_up:
+                model_up += [nn.Sequential(nn.ConvTranspose2d(ngf2 * mult, int(ngf2 * mult / 2),
+                                             kernel_size=3, stride=2,
+                                             padding=1, output_padding=1,
+                                             bias=use_bias),
+                          norm_layer(int(ngf2 * mult / 2)),
+                          nn.ReLU(True))]
+            else:
+                model_up += [nn.Sequential(Upsample(ngf2 * mult),
+                          nn.Conv2d(ngf2 * mult, int(ngf2 * mult / 2),
+                                    kernel_size=3, stride=1,
+                                    padding=1,  # output_padding=1,
+                                    bias=use_bias),
+                          norm_layer(int(ngf2 * mult / 2)),
+                          nn.ReLU(True))]
+        model_up += [nn.Sequential(nn.ReflectionPad2d(3),
+                nn.Conv2d(ngf2, output_nc, kernel_size=7, padding=0),
+                nn.Tanh())]
+        self.model_up = nn.Sequential(*model_up)
+
+    def init_weights(self):
+        with torch.no_grad():
+            if self.is_first:
+                self.linear.weight.uniform_(-1 / self.in_features, 1 / self.in_features)
+            else:
+                self.linear.weight.uniform_(-np.sqrt(6 / self.in_features) / self.omega_0, np.sqrt(6 / self.in_features) / self.omega_0)
+
+    def forward(self, x, layers = [], features = [], encode_only: bool = False):
+        features = features or []
+        last_layer = -1
+        if len(layers) > 0:
+            last_layer = layers[-1]
+            assert last_layer > 0
+        
+        def get_features():
+            f = []
+            for l in layers:
+                if l < len(features):
+                    f.append(features[l])
+            return f
+
+        if len(layers) > 0:
+            for _, layer in enumerate(self.model_down):
+                x = layer(x)
+                features.append(x)
+                if encode_only and len(features) > last_layer:
+                    return get_features()
+            x_copy = x
+            x = self.embedding_layer(x)
+            x = self.transformer(x, features=features)
+            if encode_only and len(features) > last_layer:
+                return get_features()
+        else:
+            x = self.model_down(x)
+            x_copy = x
+            x = self.embedding_layer(x)
+            x = self.transformer(x)
+
+        x = self.post_transformer_ln(x)
+        x = self.w_out(x)
+        x = x.permute(0, 2, 1)
+        x = F.fold(x, output_size=64, kernel_size=8, stride=8)
+        x = torch.cat([x, x_copy], dim=1)
+
+        if len(layers) > 0:
+            for _, layer in enumerate(self.model_up):
+                x = layer(x)
+                features.append(x)
+                if encode_only and len(features) > last_layer:
+                    return get_features()
+            if encode_only:
+                return get_features()
+            else:
+                return x, get_features()
+        else:
+            x = self.model_up(x)
+            return x
+
+
 class UnetGenerator(nn.Module):
     """Create a Unet-based generator"""
 
@@ -1451,6 +1777,69 @@ class NLayerDiscriminator(nn.Module):
     def forward(self, input):
         """Standard forward."""
         return self.model(input)
+
+
+class ResnetSimilarity(nn.Module):
+    def __init__(self, input_nc, ngf=64, norm_layer=nn.InstanceNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect'):
+        assert(n_blocks >= 0)
+        super(ResnetSimilarity, self).__init__()
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        model = [nn.ReflectionPad2d(3),
+                 nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias),
+                 norm_layer(ngf),
+                 nn.ReLU(True)]
+
+        n_downsampling = 2
+        for i in range(n_downsampling):  # add downsampling layers
+            mult = 2 ** i
+            model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                        norm_layer(ngf * mult * 2),
+                        nn.ReLU(True)]
+
+        channels = 2 ** n_downsampling * ngf
+        for i in range(n_blocks // 2):       # add ResNet blocks
+            model += [ResnetBlock(channels, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+
+        for i in range(2):  # add downsampling layers
+            model += [nn.Conv2d(channels, channels, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                        norm_layer(channels),
+                        nn.ReLU(True)]
+
+        for i in range(n_blocks // 2):       # add ResNet blocks
+            model += [ResnetBlock(channels, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+
+        model += [nn.AvgPool2d(kernel_size=8, stride=8)]
+
+        self.model = nn.Sequential(*model)
+        self.out = nn.Sequential(SineLayer(channels, channels * 2, is_first=True), SineLayer(channels * 2, 1))
+
+    def forward(self, input):
+        x = self.model(input)
+        x = x.view(x.size(0), -1)
+        return self.out(x)
+
+
+class MLPDiscriminator(nn.Module):
+    def __init__(
+        self, 
+        layers = 5, in_features = 3 * 16 * 16):
+        super(MLPDiscriminator, self).__init__()
+        models = []
+        for _ in range(layers):
+            models.append(nn.Linear(in_features, in_features))
+            models.append(nn.LeakyReLU(negative_slope=0.01))
+        models.append(nn.Linear(in_features, 1))
+        self.model = nn.Sequential(*models)
+
+    def forward(self, image):
+        x = F.unfold(image, kernel_size=16, stride=16)
+        x = x.permute(0, 2, 1).contiguous()
+        x = x.view(-1, x.size(2))
+        return self.model(x)
 
 
 class PixelDiscriminator(nn.Module):

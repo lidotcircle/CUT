@@ -35,6 +35,7 @@ if __name__ == '__main__':
         # visualizer.reset()              # reset the visualizer: make sure it saves the results to HTML at least once every epoch
 
         dataset.set_epoch(epoch)
+        model.set_epoch(epoch)
         for i, data in enumerate(dataset):  # inner loop within one epoch
             iter_start_time = time.time()  # timer for computation per iteration
             if total_iters % opt.print_freq == 0:
@@ -64,6 +65,10 @@ if __name__ == '__main__':
 
             if total_iters % opt.print_freq == 0:    # print training losses and save logging information to the disk
                 losses = model.get_current_losses()
+                losses['parameterNorm'] = model.gparam
+                losses['gradNorm'] = model.ggrad
+                losses['paramterNormAvg'] = model.gparam_avg
+                losses['gradNormAvg'] = model.ggrad_avg
                 visualizer.print_current_losses(batches_done, epoch_iter, losses, optimize_time, t_data)
                 visualizer.plot_current_losses(batches_done, float(epoch_iter) / dataset_size, losses)
 
