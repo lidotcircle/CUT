@@ -68,9 +68,24 @@ class CUTModel(BaseModel):
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         self.nce_layers = [int(i) for i in self.opt.nce_layers.split(',')]
 
+        self.loss_G_GAN = 0
+        self.loss_D_real = 0
+        self.loss_D_fake = 0
+        self.loss_G = 0
+        self.loss_NEC = 0
+        self.loss_SIM = 0
+        self.loss_S = 0
+        self.loss_S_pos = 0
+        self.loss_S_neg = 0
+        self.loss_S_GP = 0
+
         if opt.nce_idt and self.isTrain:
             self.loss_names += ['NCE_Y']
             self.visual_names += ['idt_B']
+
+        self.adaptive_scale = 1
+        self.sim_latest_n = 10
+        self.sim_latest_n_histories = []
 
         if self.isTrain:
             self.model_names = ['G', 'F', 'D', 'D2', 'S']
@@ -102,6 +117,21 @@ class CUTModel(BaseModel):
             self.optimizers.append(self.optimizer_D)
             self.optimizers.append(self.optimizer_D2)
             self.optimizers.append(self.optimizer_S)
+
+    def update_sim_scale(self, pos: float, neg: float):
+        self.sim_latest_n_histories.append((pos, neg))
+        if len(self.sim_latest_n_histories) < self.sim_latest_n:
+            return
+
+        sum = 0
+        for p, n in self.sim_latest_n_histories:
+            sum += (p + n)
+        sum /= self.sim_latest_n
+        if sum < -1:
+            self.adaptive_scale = -1 / sum
+        else:
+            self.adaptive_scale = 1
+        self.sim_latest_n_histories = []
 
     def data_dependent_initialize(self, data):
         """
@@ -279,8 +309,9 @@ class CUTModel(BaseModel):
         neg = torch.cat([real, unaligned_fake], dim=1)
         self.loss_S_pos = -self.netS(pos).mean()
         self.loss_S_neg = self.netS(neg).mean()
+        self.update_sim_scale(self.loss_S_pos.item(), self.loss_S_neg.item())
         self.loss_S_GP = self.compute_gradient_penalty(self.netS, pos, neg)
-        return (self.loss_S_pos + self.loss_S_neg + self.loss_S_GP * 10) * ( 1 / max(1, (self.get_epoch() - 15)))
+        return (self.loss_S_pos + self.loss_S_neg + self.loss_S_GP * 10) * self.adaptive_scale
 
     def compute_G_loss(self):
         """Calculate GAN and NCE loss for the generator"""
@@ -318,7 +349,7 @@ class CUTModel(BaseModel):
         else:
             loss_NCE_both = self.loss_NCE
 
-        self.loss_G = self.loss_G_GAN + self.loss_G_GAN2 + loss_NCE_both + self.loss_SIM * (1 / max(1, self.get_epoch()))
+        self.loss_G = self.loss_G_GAN + self.loss_G_GAN2 + loss_NCE_both + self.loss_SIM * self.adaptive_scale
         return self.loss_G
 
     def calculate_NCE_loss(self, src, tgt):

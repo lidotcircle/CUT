@@ -69,6 +69,7 @@ if __name__ == '__main__':
                 losses['gradNorm'] = model.ggrad
                 losses['paramterNormAvg'] = model.gparam_avg
                 losses['gradNormAvg'] = model.ggrad_avg
+                losses['adpativeScale'] = model.adaptive_scale
                 visualizer.print_current_losses(batches_done, epoch_iter, losses, optimize_time, t_data)
                 visualizer.plot_current_losses(batches_done, float(epoch_iter) / dataset_size, losses)
 
