@@ -29,6 +29,7 @@ class CUTModel(BaseModel):
         parser.add_argument('--lambda_SIM', type=float, default=1.0, help='weight for similarity loss')
         parser.add_argument('--lambda_IDT', type=float, default=1.0, help='weight for identity loss')
         parser.add_argument('--lambda_NCE', type=float, default=default_lambda_NCE, help='weight for NCE loss: NCE(G(X), X)')
+        parser.add_argument('--init_sim_sum', type=float, default=1, help='initialized similarity gain for continue training')
         parser.add_argument('--nce_idt', type=util.str2bool, nargs='?', const=True, default=False, help='use NCE loss for identity mapping: NCE(G(Y), Y))')
         parser.add_argument('--nce_layers', type=str, default='0,3,6,9,12', help='compute NCE loss on which layers')
         parser.add_argument('--nce_includes_all_negatives_from_minibatch',
@@ -86,7 +87,7 @@ class CUTModel(BaseModel):
             if opt.nce_idt or opt.lambda_SIM > 0:
                 self.visual_names += ['idt_B']
 
-        self.adaptive_scale = 1
+        self.adaptive_scale = 1 / opt.init_sim_sum
         self.sim_latest_n = 10
         self.sim_latest_n_histories = []
 
