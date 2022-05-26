@@ -64,7 +64,7 @@ class WDVisualizer():
     def display_current_results(self, visuals, epoch, save_result):
         batch_size = visuals['real_A'].shape[0]
         image_1 = make_grid(torch.cat([ visuals['real_A'], visuals['fake_B'] ], dim=0), nrow = batch_size, normalize = True)
-        if self.opt.lambda_NCE > 0:
+        if hasattr(visuals, 'real_B') and hasattr(visuals, 'idt_B'):
             image_2 = make_grid(torch.cat([ visuals['real_B'], visuals['idt_B'] ],  dim=0), nrow = batch_size, normalize = True)
             image = torch.cat([image_1, image_2], dim=1)
         else:

@@ -27,6 +27,7 @@ class CUTModel(BaseModel):
         parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss：GAN(G(X))')
         parser.add_argument('--lambda_GAN2', type=float, default=0.0, help='weight for GAN loss：GAN(G(X))')
         parser.add_argument('--lambda_SIM', type=float, default=1.0, help='weight for similarity loss')
+        parser.add_argument('--lambda_IDT', type=float, default=1.0, help='weight for identity loss')
         parser.add_argument('--lambda_NCE', type=float, default=default_lambda_NCE, help='weight for NCE loss: NCE(G(X), X)')
         parser.add_argument('--nce_idt', type=util.str2bool, nargs='?', const=True, default=False, help='use NCE loss for identity mapping: NCE(G(Y), Y))')
         parser.add_argument('--nce_layers', type=str, default='0,3,6,9,12', help='compute NCE loss on which layers')
@@ -64,7 +65,7 @@ class CUTModel(BaseModel):
 
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', "SIM", "S", "S_pos", "S_neg", "S_GP"]
+        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', "SIM", "S", "S_pos", "S_neg", "S_GP", 'idt']
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         self.nce_layers = [int(i) for i in self.opt.nce_layers.split(',')]
 
@@ -103,6 +104,7 @@ class CUTModel(BaseModel):
 
             # define loss functions
             self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)
+            self.criterionSelf = torch.nn.L1Loss().to(self.device)
             self.criterionNCE = []
 
             for nce_layer in self.nce_layers:
@@ -220,7 +222,7 @@ class CUTModel(BaseModel):
 
     def forward(self):
         """Run forward pass; called by both functions <optimize_parameters> and <test>."""
-        self.real = torch.cat((self.real_A, self.real_B), dim=0) if self.opt.nce_idt and self.opt.isTrain else self.real_A
+        self.real = torch.cat((self.real_A, self.real_B), dim=0) if (self.opt.nce_idt or self.opt.lambda_SIM > 0)and self.opt.isTrain else self.real_A
         if self.opt.flip_equivariance:
             self.flipped_for_equivariance = self.opt.isTrain and (np.random.random() < 0.5)
             if self.flipped_for_equivariance:
@@ -228,7 +230,7 @@ class CUTModel(BaseModel):
 
         self.fake = self.netG(self.real)
         self.fake_B = self.fake[:self.real_A.size(0)]
-        if self.opt.nce_idt:
+        if self.real.size(0) > self.real_A.size(0):
             self.idt_B = self.fake[self.real_A.size(0):]
 
     def compute_D_loss(self):
@@ -271,13 +273,6 @@ class CUTModel(BaseModel):
             ans.append(np.random.choice(n, ma))
         return ans
 
-    def get_patches(self, img):
-        img = F.unfold(img, kernel_size=128, stride=128)
-        img = img.view(img.size(0), 3, 128, 128, -1)
-        img = img.permute(0, 4, 1, 2, 3).contiguous()
-        img = img.view(-1, 3, 128, 128)
-        return img
-
     def compute_gradient_penalty(self, S, pos, neg):
         device = pos.get_device()
         # Random weight term for interpolation between real and fake samples
@@ -300,15 +295,17 @@ class CUTModel(BaseModel):
         return gradient_penalty
             
     def compute_S_loss(self):
-        fake = self.fake_B.detach()
-        real = self.real
-        fake = self.get_patches(fake)
-        real = self.get_patches(real)
-        unaligned_fake = fake[list(map(lambda v: v[0], self.getNoSelfIdx(fake.size(0), 1)))]
-        pos = torch.cat([real, fake], dim=1)
-        neg = torch.cat([real, unaligned_fake], dim=1)
+        if hasattr(self, "prev_fake"):
+            neg = torch.cat([self.real, self.prev_fake], dim=1)
+        else:
+            neg = torch.cat([self.real, torch.flip(self.real, [3])], dim=1)
+
+        fake = torch.cat([self.fake_B.detach(), self.idt_B.detach()], dim=0)
+        pos = torch.cat([self.real, fake], dim=1)
         self.loss_S_pos = -self.netS(pos).mean()
         self.loss_S_neg = self.netS(neg).mean()
+        self.prev_fake = fake
+
         self.update_sim_scale(self.loss_S_pos.item(), self.loss_S_neg.item())
         self.loss_S_GP = self.compute_gradient_penalty(self.netS, pos, neg)
         return (self.loss_S_pos + self.loss_S_neg + self.loss_S_GP * 10) * self.adaptive_scale
@@ -325,10 +322,10 @@ class CUTModel(BaseModel):
             self.loss_G_GAN = 0.0
 
         if self.opt.lambda_SIM > 0.0:
-            r1 = self.get_patches(self.real)
-            f1 = self.get_patches(fake)
-            px = torch.cat([r1, f1], dim=1)
-            self.loss_SIM = -self.netS(px).mean() * self.opt.lambda_SIM
+            fcat = torch.cat([self.fake_B, self.idt_B], dim=0)
+            cat_real_fake = torch.cat([self.real, fcat], dim=1)
+            self.loss_SIM = -self.netS(cat_real_fake).mean() * self.opt.lambda_SIM
+            self.loss_idt = self.criterionSelf(self.idt_B, self.real_B) * self.opt.lambda_IDT
         else:
             self.loss_SIM = 0
 
@@ -349,7 +346,7 @@ class CUTModel(BaseModel):
         else:
             loss_NCE_both = self.loss_NCE
 
-        self.loss_G = self.loss_G_GAN + self.loss_G_GAN2 + loss_NCE_both + self.loss_SIM * self.adaptive_scale
+        self.loss_G = self.loss_idt + self.loss_G_GAN + self.loss_G_GAN2 + loss_NCE_both + self.loss_SIM * self.adaptive_scale
         return self.loss_G
 
     def calculate_NCE_loss(self, src, tgt):

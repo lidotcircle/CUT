@@ -1804,7 +1804,7 @@ class ResnetSimilarity(nn.Module):
         for i in range(n_blocks // 2):       # add ResNet blocks
             model += [ResnetBlock(channels, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
 
-        for i in range(2):  # add downsampling layers
+        for i in range(3):  # add downsampling layers
             model += [nn.Conv2d(channels, channels, kernel_size=3, stride=2, padding=1, bias=use_bias),
                         norm_layer(channels),
                         nn.ReLU(True)]
