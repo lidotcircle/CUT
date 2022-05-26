@@ -80,9 +80,11 @@ class CUTModel(BaseModel):
         self.loss_S_neg = 0
         self.loss_S_GP = 0
 
-        if opt.nce_idt and self.isTrain:
-            self.loss_names += ['NCE_Y']
-            self.visual_names += ['idt_B']
+        if self.isTrain:
+            if opt.nce_idt:
+                self.loss_names += ['NCE_Y']
+            if opt.nce_idt or opt.lambda_SIM > 0:
+                self.visual_names += ['idt_B']
 
         self.adaptive_scale = 1
         self.sim_latest_n = 10
