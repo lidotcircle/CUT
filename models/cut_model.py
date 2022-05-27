@@ -87,6 +87,7 @@ class CUTModel(BaseModel):
         self.loss_S_neg = 0
         self.loss_S_aug = 0
         self.loss_S_GP = 0
+        self.loss_idt = 0
 
         if self.isTrain:
             if opt.nce_idt:
@@ -98,6 +99,7 @@ class CUTModel(BaseModel):
         self.sim_latest_n = 10
         self.sim_latest_n_histories = []
 
+        self.sampling_images = False
         if self.isTrain:
             self.model_names = ['G', 'F', 'D', 'D2', 'S']
         else:  # during test time, only load G
@@ -269,11 +271,14 @@ class CUTModel(BaseModel):
 
     def forward(self):
         """Run forward pass; called by both functions <optimize_parameters> and <test>."""
-        self.real = torch.cat((self.real_A, self.real_B), dim=0) if (self.opt.nce_idt or self.opt.lambda_SIM > 0)and self.opt.isTrain else self.real_A
+        self.real = torch.cat((self.real_A, self.real_B), dim=0) if (self.opt.nce_idt or self.opt.lambda_IDT > 0 or self.sampling_images)and self.opt.isTrain else self.real_A
         if self.opt.flip_equivariance:
             self.flipped_for_equivariance = self.opt.isTrain and (np.random.random() < 0.5)
             if self.flipped_for_equivariance:
                 self.real = torch.flip(self.real, [3])
+
+        if hasattr(self, 'idt_B'):
+            del self.idt_B
 
         self.fake = self.netG(self.real)
         self.fake_B = self.fake[:self.real_A.size(0)]
@@ -348,7 +353,7 @@ class CUTModel(BaseModel):
         else:
             neg = torch.cat([self.real, torch.flip(self.real, [3])], dim=1)
 
-        fake = torch.cat([self.fake_B.detach(), self.idt_B.detach()], dim=0)
+        fake = torch.cat([self.fake_B.detach(), self.idt_B.detach()], dim=0) if hasattr(self, "idt_B") else self.fake_B.detach()
         pos = torch.cat([self.real, fake], dim=1)
         pos_similarity = self.netS(pos)
         self.loss_S_pos = -pos_similarity.mean()
@@ -375,12 +380,14 @@ class CUTModel(BaseModel):
             self.loss_G_GAN = 0.0
 
         if self.opt.lambda_SIM > 0.0:
-            fcat = torch.cat([self.fake_B, self.idt_B], dim=0)
+            fcat = torch.cat([self.fake_B, self.idt_B], dim=0) if hasattr(self, 'idt_B') else self.fake_B
             cat_real_fake = torch.cat([self.real, fcat], dim=1)
             self.loss_SIM = -self.netS(cat_real_fake).mean() * self.opt.lambda_SIM
-            self.loss_idt = self.criterionSelf(self.idt_B, self.real_B) * self.opt.lambda_IDT
         else:
             self.loss_SIM = 0
+
+        if self.opt.lambda_IDT > 0.0:
+            self.loss_idt = self.criterionSelf(self.idt_B, self.real_B) * self.opt.lambda_IDT
 
         if self.opt.lambda_GAN2 > 0.0:
             pred_fake2 = self.netD2(fake)

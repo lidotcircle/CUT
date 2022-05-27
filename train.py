@@ -18,8 +18,10 @@ if __name__ == '__main__':
     test_dataset = create_dataset(util.copyconf(opt, phase="test", batch_size=5))
     def sample_image():
         _, data = next(enumerate(test_dataset))
+        model.sampling_images = True
         model.set_input(data)  # unpack data from data loader
         model.test()           # run inference
+        model.sampling_images = False
 
     visualizer = WDVisualizer(opt)   # create a visualizer that display/save images and plots
     opt.visualizer = visualizer
