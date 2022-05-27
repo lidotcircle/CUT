@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+from .augment  import AugmentPipe
 from .base_model import BaseModel
 from . import networks
 from .patchnce import PatchNCELoss
@@ -29,6 +30,11 @@ class CUTModel(BaseModel):
         parser.add_argument('--lambda_SIM', type=float, default=1.0, help='weight for similarity loss')
         parser.add_argument('--lambda_IDT', type=float, default=1.0, help='weight for identity loss')
         parser.add_argument('--lambda_NCE', type=float, default=default_lambda_NCE, help='weight for NCE loss: NCE(G(X), X)')
+        parser.add_argument('--ada', type=bool, default=True, help='adaptive distrcrimator augmentation')
+        parser.add_argument('--ada_target', type=float, default=0.8, help='E[D_train]')
+        parser.add_argument('--ada_interval', type=int, default=20, help='ADA interval')
+        parser.add_argument('--ada_speed', type=int, default=500, help='ADA speed')
+        parser.add_argument('--sim_augment_p', type=float, default=1, help='similarity module image augmentation probability')
         parser.add_argument('--init_sim_sum', type=float, default=1, help='initialized similarity gain for continue training')
         parser.add_argument('--nce_idt', type=util.str2bool, nargs='?', const=True, default=False, help='use NCE loss for identity mapping: NCE(G(Y), Y))')
         parser.add_argument('--nce_layers', type=str, default='0,3,6,9,12', help='compute NCE loss on which layers')
@@ -66,7 +72,7 @@ class CUTModel(BaseModel):
 
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', "SIM", "S", "S_pos", "S_neg", "S_GP", 'idt']
+        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', "SIM", "S", "S_pos", "S_neg", "S_aug", "S_GP", 'idt']
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         self.nce_layers = [int(i) for i in self.opt.nce_layers.split(',')]
 
@@ -79,6 +85,7 @@ class CUTModel(BaseModel):
         self.loss_S = 0
         self.loss_S_pos = 0
         self.loss_S_neg = 0
+        self.loss_S_aug = 0
         self.loss_S_GP = 0
 
         if self.isTrain:
@@ -95,6 +102,23 @@ class CUTModel(BaseModel):
             self.model_names = ['G', 'F', 'D', 'D2', 'S']
         else:  # during test time, only load G
             self.model_names = ['G']
+
+        self.augment_p = 0
+        self.EDTRAIN = 0
+        if opt.ada:
+            self.augment_pipe_dis = AugmentPipe(
+                rotate=1,
+                brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1,
+                imgfilter=1,
+                noise=1
+            ).train().requires_grad_(False).to(self.device)
+            self.augment_pipe_dis.p.copy_(torch.as_tensor(self.augment_p))
+
+        self.augment_pipe_sim = AugmentPipe(
+            rotate=1, 
+            brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1,
+            cutout=1, cutout_size=0.3).train().requires_grad_(False).to(self.device)
+        self.augment_pipe_sim.p.copy_(torch.as_tensor(opt.sim_augment_p))
 
         # define networks (both generator and discriminator)
         self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.normG, not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias, opt.no_antialias_up, self.gpu_ids, opt)
@@ -122,6 +146,26 @@ class CUTModel(BaseModel):
             self.optimizers.append(self.optimizer_D)
             self.optimizers.append(self.optimizer_D2)
             self.optimizers.append(self.optimizer_S)
+
+    def report_real_validity(self, validity):
+        if not self.opt.ada:
+            return
+
+        assert self.opt.gan_mode == 'wgangp'
+        if not hasattr(self, "validity_histories"):
+            self.validity_histories = []
+        
+        validity = torch.mean(validity.detach().cpu().view(validity.size(0), -1), dim=1)
+        self.validity_histories.append(validity)
+        if len(self.validity_histories) >= self.opt.ada_interval:
+            val = torch.cat(self.validity_histories, dim=0)
+            n_positive_items = torch.where(val > 0, torch.ones_like(val), torch.zeros_like(val)).sum().item()
+            EDT = n_positive_items / val.size(0)
+            self.EDTRAIN = EDT
+            adjust = np.sign(EDT - self.opt.ada_target) * (self.opt.batch_size * self.opt.ada_interval) / (self.opt.ada_speed * 1000)
+            self.augment_p = min(max(self.augment_pipe_dis.p.item() + adjust, 0), 1)
+            self.augment_pipe_dis.p.copy_(torch.as_tensor(self.augment_p))
+            self.validity_histories = []
 
     def update_sim_scale(self, pos: float, neg: float):
         self.sim_latest_n_histories.append((pos, neg))
@@ -240,10 +284,11 @@ class CUTModel(BaseModel):
         """Calculate GAN loss for the discriminator"""
         fake = self.fake_B.detach()
         # Fake; stop backprop to the generator by detaching fake_B
-        pred_fake = self.netD(fake)
+        pred_fake = self.netD(self.augment_pipe_dis(fake) if self.opt.ada else fake)
         self.loss_D_fake = self.criterionGAN(pred_fake, False).mean()
         # Real
-        self.pred_real = self.netD(self.real_B)
+        self.pred_real = self.netD(self.augment_pipe_dis(self.real_B) if self.opt.ada else self.real_B)
+        self.report_real_validity(-self.pred_real)
         loss_D_real = self.criterionGAN(self.pred_real, True)
         self.loss_D_real = loss_D_real.mean()
 
@@ -305,13 +350,18 @@ class CUTModel(BaseModel):
 
         fake = torch.cat([self.fake_B.detach(), self.idt_B.detach()], dim=0)
         pos = torch.cat([self.real, fake], dim=1)
-        self.loss_S_pos = -self.netS(pos).mean()
+        pos_similarity = self.netS(pos)
+        self.loss_S_pos = -pos_similarity.mean()
         self.loss_S_neg = self.netS(neg).mean()
         self.prev_fake = fake
 
+        aug_real = self.augment_pipe_sim(self.real)
+        aug_pos = torch.cat([aug_real, fake], dim=1)
+        self.loss_S_aug = -(pos_similarity - self.netS(aug_pos)).mean()
+
         self.update_sim_scale(self.loss_S_pos.item(), self.loss_S_neg.item())
         self.loss_S_GP = self.compute_gradient_penalty(self.netS, pos, neg)
-        return (self.loss_S_pos + self.loss_S_neg + self.loss_S_GP * 10) * self.adaptive_scale
+        return (self.loss_S_pos + self.loss_S_neg + self.loss_S_aug + self.loss_S_GP * 10) * self.adaptive_scale
 
     def compute_G_loss(self):
         """Calculate GAN and NCE loss for the generator"""
@@ -319,7 +369,7 @@ class CUTModel(BaseModel):
 
         # First, G(A) should fake the discriminator
         if self.opt.lambda_GAN > 0.0:
-            pred_fake = self.netD(fake)
+            pred_fake = self.netD(self.augment_pipe_dis(fake) if self.opt.ada else fake)
             self.loss_G_GAN = self.criterionGAN(pred_fake, True).mean() * self.opt.lambda_GAN
         else:
             self.loss_G_GAN = 0.0
