@@ -73,7 +73,7 @@ class CUTModel(BaseModel):
 
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', "SIM", "S", "S_pos", "S_neg", "S_aug_pos", "S_aug_neg", "S_GP", 'idt']
+        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', "SIM", "S", "S_pos", "S_neg", "S_aug", "S_GP", 'idt']
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         self.nce_layers = [int(i) for i in self.opt.nce_layers.split(',')]
 
@@ -86,8 +86,7 @@ class CUTModel(BaseModel):
         self.loss_S = 0
         self.loss_S_pos = 0
         self.loss_S_neg = 0
-        self.loss_S_aug_pos = 0
-        self.loss_S_aug_neg = 0
+        self.loss_S_aug = 0
         self.loss_S_GP = 0
         self.loss_idt = 0
 
@@ -359,21 +358,27 @@ class CUTModel(BaseModel):
 
         fake = torch.cat([self.fake_B.detach(), self.idt_B.detach()], dim=0) if hasattr(self, "idt_B") else self.fake_B.detach()
         pos = torch.cat([self.real, fake], dim=1)
-        pos_similarity = self.netS(pos)
-        self.loss_S_pos = -pos_similarity.mean()
+        pos_similarity = self.netS(pos).mean()
+        self.loss_S_pos = -pos_similarity
         neg_similarity = self.netS(neg).mean()
         self.loss_S_neg = neg_similarity
         self.prev_fake = fake
 
         aug_real = self.augment_pipe_sim(self.real)
-        aug_pos = torch.cat([aug_real, fake], dim=1)
-        aug_similarity = self.netS(aug_pos)
-        self.loss_S_aug_pos = -(pos_similarity - aug_similarity).mean()
-        self.loss_S_aug_neg = -(aug_similarity - neg_similarity).mean()
+        aug_sample = torch.cat([aug_real, fake], dim=1)
+        aug_fake = self.augment_pipe_sim(fake)
+        aug_2 = torch.cat([self.real, aug_fake], dim=1)
+        aug_sample = torch.cat([aug_sample, aug_2], dim=0)
+        aug_similarity = self.netS(aug_sample).mean()
 
         self.loss_S_GP, gradients_norm = self.compute_gradient_penalty(self.netS, pos, neg)
         self.update_sim_scale(self.loss_S_pos.item(), self.loss_S_neg.item(), gradients_norm.mean().item())
-        return (self.loss_S_pos + self.loss_S_neg + self.loss_S_aug_pos + self.loss_S_aug_neg + self.loss_S_GP * 10) * self.adaptive_scale
+        alpha = 0.85
+        self.loss_S_aug = torch.abs(aug_similarity - (alpha * pos_similarity + (1 - alpha * neg_similarity)))
+        self.pos_similarity = pos_similarity.item()
+        self.neg_similarity = neg_similarity.item()
+        self.aug_similarity = aug_similarity.item()
+        return (self.loss_S_pos + self.loss_S_neg + self.loss_S_aug + self.loss_S_GP * 10) * self.adaptive_scale
 
     def compute_G_loss(self):
         """Calculate GAN and NCE loss for the generator"""
