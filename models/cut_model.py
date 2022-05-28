@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -31,7 +32,7 @@ class CUTModel(BaseModel):
         parser.add_argument('--lambda_IDT', type=float, default=1.0, help='weight for identity loss')
         parser.add_argument('--lambda_NCE', type=float, default=default_lambda_NCE, help='weight for NCE loss: NCE(G(X), X)')
         parser.add_argument('--ada', type=bool, default=True, help='adaptive distrcrimator augmentation')
-        parser.add_argument('--ada_target', type=float, default=0.8, help='E[D_train]')
+        parser.add_argument('--ada_target', type=float, default=0.6, help='E[D_train]')
         parser.add_argument('--ada_interval', type=int, default=20, help='ADA interval')
         parser.add_argument('--ada_speed', type=int, default=500, help='ADA speed')
         parser.add_argument('--sim_augment_p', type=float, default=1, help='similarity module image augmentation probability')
@@ -72,7 +73,7 @@ class CUTModel(BaseModel):
 
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', "SIM", "S", "S_pos", "S_neg", "S_aug", "S_GP", 'idt']
+        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', "SIM", "S", "S_pos", "S_neg", "S_aug_pos", "S_aug_neg", "S_GP", 'idt']
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         self.nce_layers = [int(i) for i in self.opt.nce_layers.split(',')]
 
@@ -85,7 +86,8 @@ class CUTModel(BaseModel):
         self.loss_S = 0
         self.loss_S_pos = 0
         self.loss_S_neg = 0
-        self.loss_S_aug = 0
+        self.loss_S_aug_pos = 0
+        self.loss_S_aug_neg = 0
         self.loss_S_GP = 0
         self.loss_idt = 0
 
@@ -118,8 +120,8 @@ class CUTModel(BaseModel):
 
         self.augment_pipe_sim = AugmentPipe(
             rotate=1, 
-            brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1,
-            cutout=1, cutout_size=0.3).train().requires_grad_(False).to(self.device)
+            brightness=0.7, contrast=0.7, lumaflip=0.7, hue=0.7, saturation=0.7,
+            cutout=1, cutout_size=0.25).train().requires_grad_(False).to(self.device)
         self.augment_pipe_sim.p.copy_(torch.as_tensor(opt.sim_augment_p))
 
         # define networks (both generator and discriminator)
@@ -169,19 +171,20 @@ class CUTModel(BaseModel):
             self.augment_pipe_dis.p.copy_(torch.as_tensor(self.augment_p))
             self.validity_histories = []
 
-    def update_sim_scale(self, pos: float, neg: float):
-        self.sim_latest_n_histories.append((pos, neg))
+    def update_sim_scale(self, pos: float, neg: float, gradients_norm: float):
+        self.sim_latest_n_histories.append((pos, neg, gradients_norm))
         if len(self.sim_latest_n_histories) < self.sim_latest_n:
             return
 
         sum = 0
-        for p, n in self.sim_latest_n_histories:
+        gradients_sum = 0
+        for p, n, g in self.sim_latest_n_histories:
             sum += (p + n)
+            gradients_sum += g
         sum /= self.sim_latest_n
-        if sum < -1:
-            self.adaptive_scale = -1 / sum
-        else:
-            self.adaptive_scale = 1
+        gradients_sum /= self.sim_latest_n
+        scale_div = gradients_sum * math.log(max(sum, 0) + 1)
+        self.adaptive_scale = 1 / max(1, scale_div)
         self.sim_latest_n_histories = []
 
     def data_dependent_initialize(self, data):
@@ -344,8 +347,9 @@ class CUTModel(BaseModel):
             only_inputs=True,
         )[0]
         gradients = gradients.view(gradients.size(0), -1)
-        gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
-        return gradient_penalty
+        gradients_norm = gradients.norm(2, dim=1)
+        gradient_penalty = ((gradients_norm - 1) ** 2).mean()
+        return gradient_penalty, gradients_norm
             
     def compute_S_loss(self):
         if hasattr(self, "prev_fake"):
@@ -357,16 +361,19 @@ class CUTModel(BaseModel):
         pos = torch.cat([self.real, fake], dim=1)
         pos_similarity = self.netS(pos)
         self.loss_S_pos = -pos_similarity.mean()
-        self.loss_S_neg = self.netS(neg).mean()
+        neg_similarity = self.netS(neg).mean()
+        self.loss_S_neg = neg_similarity
         self.prev_fake = fake
 
         aug_real = self.augment_pipe_sim(self.real)
         aug_pos = torch.cat([aug_real, fake], dim=1)
-        self.loss_S_aug = -(pos_similarity - self.netS(aug_pos)).mean()
+        aug_similarity = self.netS(aug_pos)
+        self.loss_S_aug_pos = -(pos_similarity - aug_similarity).mean()
+        self.loss_S_aug_neg = -(aug_similarity - neg_similarity).mean()
 
-        self.update_sim_scale(self.loss_S_pos.item(), self.loss_S_neg.item())
-        self.loss_S_GP = self.compute_gradient_penalty(self.netS, pos, neg)
-        return (self.loss_S_pos + self.loss_S_neg + self.loss_S_aug + self.loss_S_GP * 10) * self.adaptive_scale
+        self.loss_S_GP, gradients_norm = self.compute_gradient_penalty(self.netS, pos, neg)
+        self.update_sim_scale(self.loss_S_pos.item(), self.loss_S_neg.item(), gradients_norm.mean().item())
+        return (self.loss_S_pos + self.loss_S_neg + self.loss_S_aug_pos + self.loss_S_aug_neg + self.loss_S_GP * 10) * self.adaptive_scale
 
     def compute_G_loss(self):
         """Calculate GAN and NCE loss for the generator"""
