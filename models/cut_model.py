@@ -374,7 +374,7 @@ class CUTModel(BaseModel):
         self.loss_S_GP, gradients_norm = self.compute_gradient_penalty(self.netS, pos, neg)
         self.update_sim_scale(self.loss_S_pos.item(), self.loss_S_neg.item(), gradients_norm.mean().item())
         alpha = 0.85
-        self.loss_S_aug = torch.abs(aug_similarity - (alpha * pos_similarity + (1 - alpha * neg_similarity)))
+        self.loss_S_aug = torch.abs(aug_similarity - (alpha * pos_similarity + (1 - alpha) * neg_similarity))
         self.pos_similarity = pos_similarity.item()
         self.neg_similarity = neg_similarity.item()
         self.aug_similarity = aug_similarity.item()
