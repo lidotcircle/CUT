@@ -77,6 +77,8 @@ class CUTModel(BaseModel):
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         self.nce_layers = [int(i) for i in self.opt.nce_layers.split(',')]
 
+        opt.ada = opt.ada and opt.gan_mode == 'wgangp'
+
         self.loss_G_GAN = 0
         self.loss_D_real = 0
         self.loss_D_fake = 0
