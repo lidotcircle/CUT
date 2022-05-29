@@ -73,13 +73,14 @@ class CUTModel(BaseModel):
 
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', "SIM", "S", "S_pos", "S_neg", "S_aug", "S_GP", 'idt']
+        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'D_gp', 'G', "SIM", "S", "S_pos", "S_neg", "S_aug", "S_GP", 'idt']
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         self.nce_layers = [int(i) for i in self.opt.nce_layers.split(',')]
 
         self.loss_G_GAN = 0
         self.loss_D_real = 0
         self.loss_D_fake = 0
+        self.loss_D_gp = 0
         self.loss_G = 0
         self.loss_NEC = 0
         self.loss_SIM = 0
@@ -301,6 +302,11 @@ class CUTModel(BaseModel):
 
         # combine loss and calculate gradients
         self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5
+
+        if self.opt.gan_mode == 'wgangp':
+            self.loss_D_gp, gradients = networks.cal_gradient_penalty(self.netD, self.real_B, fake, self.device, lambda_gp=1)
+            self.dis_grad_norm = torch.norm(gradients).item()
+            self.loss_D = self.loss_D + self.loss_D_gp * 10
         return self.loss_D
 
     def compute_D2_loss(self):

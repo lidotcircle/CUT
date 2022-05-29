@@ -77,6 +77,8 @@ if __name__ == '__main__':
                 losses['adpativeScale'] = model.adaptive_scale
                 losses['augment_p'] = model.augment_p
                 losses['EDTRAIN'] = model.EDTRAIN
+                if hasattr(model, "dis_grad_norm"):
+                    losses['dis_grad_norm'] = model.dis_grad_norm
                 visualizer.print_current_losses(batches_done, epoch_iter, losses, optimize_time, t_data)
                 visualizer.plot_current_losses(batches_done, float(epoch_iter) / dataset_size, losses)
 
