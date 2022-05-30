@@ -180,7 +180,7 @@ class CUTModel(BaseModel):
         sum = 0
         gradients_sum = 0
         for p, n, g in self.sim_latest_n_histories:
-            sum += (p + n)
+            sum -= (p + n)
             gradients_sum += g
         sum /= self.sim_latest_n
         gradients_sum /= self.sim_latest_n
