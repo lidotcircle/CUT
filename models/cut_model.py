@@ -184,7 +184,7 @@ class CUTModel(BaseModel):
             gradients_sum += g
         sum /= self.sim_latest_n
         gradients_sum /= self.sim_latest_n
-        scale_div = max(sum, 1)
+        scale_div = max(gradients_sum * math.log(1 + max(sum, 0)), 1)
         self.adaptive_scale = 1 / max(1, scale_div)
         self.sim_latest_n_histories = []
 
