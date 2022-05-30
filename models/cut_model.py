@@ -36,7 +36,6 @@ class CUTModel(BaseModel):
         parser.add_argument('--ada_interval', type=int, default=20, help='ADA interval')
         parser.add_argument('--ada_speed', type=int, default=500, help='ADA speed')
         parser.add_argument('--sim_augment_p', type=float, default=1, help='similarity module image augmentation probability')
-        parser.add_argument('--init_sim_sum', type=float, default=1, help='initialized similarity gain for continue training')
         parser.add_argument('--nce_idt', type=util.str2bool, nargs='?', const=True, default=False, help='use NCE loss for identity mapping: NCE(G(Y), Y))')
         parser.add_argument('--nce_layers', type=str, default='0,3,6,9,12', help='compute NCE loss on which layers')
         parser.add_argument('--nce_includes_all_negatives_from_minibatch',
@@ -99,7 +98,7 @@ class CUTModel(BaseModel):
             if opt.nce_idt or opt.lambda_SIM > 0:
                 self.visual_names += ['idt_B']
 
-        self.adaptive_scale = 1 / opt.init_sim_sum
+        self.adaptive_scale = 0
         self.sim_latest_n = 10
         self.sim_latest_n_histories = []
 
@@ -185,7 +184,7 @@ class CUTModel(BaseModel):
             gradients_sum += g
         sum /= self.sim_latest_n
         gradients_sum /= self.sim_latest_n
-        scale_div = gradients_sum * math.log(max(sum, 0) + 1)
+        scale_div = max(sum, 1)
         self.adaptive_scale = 1 / max(1, scale_div)
         self.sim_latest_n_histories = []
 
@@ -386,7 +385,7 @@ class CUTModel(BaseModel):
         self.pos_similarity = pos_similarity.item()
         self.neg_similarity = neg_similarity.item()
         self.aug_similarity = aug_similarity.item()
-        return (self.loss_S_pos + self.loss_S_neg + self.loss_S_aug + self.loss_S_GP * 10) * self.adaptive_scale
+        return self.loss_S_pos + self.loss_S_neg + self.loss_S_aug + self.loss_S_GP * 10
 
     def compute_G_loss(self):
         """Calculate GAN and NCE loss for the generator"""
