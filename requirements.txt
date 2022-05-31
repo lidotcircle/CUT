@@ -6,3 +6,4 @@ visdom>=0.1.8.8
 packaging
 GPUtil>=1.4.0
 aiohttp>=3.8.1
+ninja>=1.10.2.3
