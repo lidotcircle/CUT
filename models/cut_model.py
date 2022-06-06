@@ -120,7 +120,6 @@ class CUTModel(BaseModel):
             self.augment_pipe_dis.p.copy_(torch.as_tensor(self.augment_p))
 
         self.augment_pipe_sim = AugmentPipe(
-            rotate=1, 
             brightness=0.7, contrast=0.7, lumaflip=0.7, hue=0.7, saturation=0.7,
             cutout=1, cutout_size=0.25).train().requires_grad_(False).to(self.device)
         self.augment_pipe_sim.p.copy_(torch.as_tensor(opt.sim_augment_p))
@@ -128,7 +127,7 @@ class CUTModel(BaseModel):
         # define networks (both generator and discriminator)
         self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.normG, not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias, opt.no_antialias_up, self.gpu_ids, opt)
         self.netF = networks.define_F(opt.input_nc, opt.netF, opt.normG, not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
-        self.netS = networks.define_S(netS='basic', gpu_ids=self.gpu_ids)
+        self.netS = networks.define_S(netS='patch', gpu_ids=self.gpu_ids)
 
         if self.isTrain:
             self.netD = networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.normD, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
@@ -365,10 +364,10 @@ class CUTModel(BaseModel):
 
         fake = torch.cat([self.fake_B.detach(), self.idt_B.detach()], dim=0) if hasattr(self, "idt_B") else self.fake_B.detach()
         pos = torch.cat([self.real, fake], dim=1)
-        pos_similarity = self.netS(pos).mean()
-        self.loss_S_pos = -pos_similarity
-        neg_similarity = self.netS(neg).mean()
-        self.loss_S_neg = neg_similarity
+        pos_similarity = self.netS(pos)
+        self.loss_S_pos = torch.abs(pos_similarity - 1).mean()
+        neg_similarity = self.netS(neg)
+        self.loss_S_neg = torch.abs(neg_similarity).mean()
         self.prev_fake = fake
 
         aug_real = self.augment_pipe_sim(self.real)
@@ -376,16 +375,18 @@ class CUTModel(BaseModel):
         aug_fake = self.augment_pipe_sim(fake)
         aug_2 = torch.cat([self.real, aug_fake], dim=1)
         aug_sample = torch.cat([aug_sample, aug_2], dim=0)
-        aug_similarity = self.netS(aug_sample).mean()
+        aug_similarity = self.netS(aug_sample)
 
-        self.loss_S_GP, gradients_norm = self.compute_gradient_penalty(self.netS, pos, neg)
-        self.update_sim_scale(self.loss_S_pos.item(), self.loss_S_neg.item(), gradients_norm.mean().item())
+        self.loss_G_GP = 0
+        # self.loss_S_GP, gradients_norm = self.compute_gradient_penalty(self.netS, pos, neg)
+        # self.update_sim_scale(self.loss_S_pos.item(), self.loss_S_neg.item(), 0)
+        self.adaptive_scale = 1
         alpha = 0.85
-        self.loss_S_aug = torch.abs(aug_similarity - (alpha * pos_similarity + (1 - alpha) * neg_similarity))
-        self.pos_similarity = pos_similarity.item()
-        self.neg_similarity = neg_similarity.item()
-        self.aug_similarity = aug_similarity.item()
-        return self.loss_S_pos + self.loss_S_neg + self.loss_S_aug + self.loss_S_GP * 10
+        self.loss_S_aug = torch.abs(aug_similarity - alpha).mean()
+        self.pos_similarity = pos_similarity.mean().item()
+        self.neg_similarity = neg_similarity.mean().item()
+        self.aug_similarity = aug_similarity.mean().item()
+        return self.loss_S_pos + self.loss_S_neg + self.loss_S_aug
 
     def compute_G_loss(self):
         """Calculate GAN and NCE loss for the generator"""
@@ -401,7 +402,7 @@ class CUTModel(BaseModel):
         if self.opt.lambda_SIM > 0.0:
             fcat = torch.cat([self.fake_B, self.idt_B], dim=0) if hasattr(self, 'idt_B') else self.fake_B
             cat_real_fake = torch.cat([self.real, fcat], dim=1)
-            self.loss_SIM = -self.netS(cat_real_fake).mean() * self.opt.lambda_SIM
+            self.loss_SIM = torch.abs(self.netS(cat_real_fake) - 1).mean() * self.opt.lambda_SIM
         else:
             self.loss_SIM = 0
 

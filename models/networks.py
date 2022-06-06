@@ -297,6 +297,8 @@ def define_S(netS, init_type='normal', init_gain=0.02, gpu_ids=[], opt=None):
 
     if netS == 'basic':  # default PatchGAN classifier
         net = ResnetSimilarity(input_nc=6)
+    elif netS == 'patch':
+        net = NLayerSimilarity()
     else:
         raise NotImplementedError('model name [%s] is not recognized' % netS)
     return init_net(net, init_type, init_gain, gpu_ids, initialize_weights=True)
@@ -1778,6 +1780,57 @@ class NLayerDiscriminator(nn.Module):
         """Standard forward."""
         return self.model(input)
 
+class ContrastivePatchSimilarity(nn.Module):
+    def __init__(self, input_nc, ngf=64, norm_layer=nn.InstanceNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect'):
+        assert(n_blocks >= 0)
+        super(ContrastivePatchSimilarity, self).__init__()
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        def get_resnet():
+            model = [nn.ReflectionPad2d(3),
+                    nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias),
+                    norm_layer(ngf),
+                    nn.ReLU(True)]
+
+            for i in range(2):  # add downsampling layers
+                mult = 2 ** i
+                model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                            norm_layer(ngf * mult * 2),
+                            nn.ReLU(True)]
+
+            channels = (2 ** 2) * ngf
+            for i in range(n_blocks):       # add ResNet blocks
+                model += [ResnetBlock(channels, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+
+            for i in range(2):
+                model += [nn.Conv2d(channels, channels, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                            norm_layer(ngf * mult * 2),
+                            nn.ReLU(True)]
+
+            for i in range(n_blocks // 2):       # add ResNet blocks
+                model += [ResnetBlock(channels, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+
+            return nn.Sequential(*model)
+        
+        self.m1 = get_resnet()
+        self.m2 = get_resnet()
+        self.simple_map1 = nn.Sequential(nn.Linear(4 * ngf, 256), nn.ReLU(), nn.Linear(256, 256))
+        self.simple_map2 = nn.Sequential(nn.Linear(4 * ngf, 256), nn.ReLU(), nn.Linear(256, 256))
+
+    def forward(self, src, trg):
+        x1 = self.m1(src)
+        x2 = self.m2(trg)
+        x1 = x1.view(x1.size(0), x1.size(1), -1).permute(0, 2, 1)
+        x2 = x2.view(x2.size(0), x2.size(1), -1).permute(0, 2, 1)
+        x1 = self.simple_map1(x1)
+        x2 = self.simple_map2(x2)
+        x1 = F.normalize(x1, p=2, dim=2)
+        x2 = F.normalize(x2, p=2, dim=2)
+        vs = torch.einsum("bij,bkj->bik", x1, x2)
+        # TODO
 
 class ResnetSimilarity(nn.Module):
     def __init__(self, input_nc, ngf=64, norm_layer=nn.InstanceNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect'):
@@ -1821,6 +1874,55 @@ class ResnetSimilarity(nn.Module):
         x = self.model(input)
         x = x.view(x.size(0), -1)
         return self.linear_out(x)
+
+
+class NLayerSimilarity(nn.Module):
+    def __init__(self, ndf=64, n_layers=5, norm_layer=nn.InstanceNorm2d, no_antialias=False):
+        super(NLayerSimilarity, self).__init__()
+        if type(norm_layer) == functools.partial:  # no need to use bias as BatchNorm2d has affine parameters
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        kw = 4
+        padw = 1
+        if(no_antialias):
+            sequence = [nn.Conv2d(6, ndf, kernel_size=kw, stride=2, padding=padw), nn.LeakyReLU(0.2, True)]
+        else:
+            sequence = [nn.Conv2d(6, ndf, kernel_size=kw, stride=1, padding=padw), nn.LeakyReLU(0.2, True), Downsample(ndf)]
+        nf_mult = 1
+        nf_mult_prev = 1
+        for n in range(1, n_layers):  # gradually increase the number of filters
+            nf_mult_prev = nf_mult
+            nf_mult = min(2 ** n, 8)
+            if(no_antialias):
+                sequence += [
+                    nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=use_bias),
+                    norm_layer(ndf * nf_mult),
+                    nn.LeakyReLU(0.2, True)
+                ]
+            else:
+                sequence += [
+                    nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias),
+                    norm_layer(ndf * nf_mult),
+                    nn.LeakyReLU(0.2, True),
+                    Downsample(ndf * nf_mult)]
+
+        nf_mult_prev = nf_mult
+        nf_mult = min(2 ** n_layers, 8)
+        sequence += [
+            nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias),
+            norm_layer(ndf * nf_mult),
+            nn.LeakyReLU(0.2, True)
+        ]
+
+        sequence += [nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
+        self.model = nn.Sequential(*sequence)
+
+    def forward(self, input):
+        """Standard forward."""
+        return self.model(input)
+
 
 
 class MLPDiscriminator(nn.Module):
