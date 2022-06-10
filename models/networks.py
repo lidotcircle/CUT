@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch.nn import init
 import functools
 from torch.optim import lr_scheduler
+from torch.nn.parameter import Parameter
 import numpy as np
 
 from .stylegan_networks import StyleGAN2Discriminator, StyleGAN2Generator, TileStyleGAN2Discriminator
@@ -251,11 +252,11 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
     norm_layer = get_norm_layer(norm_type=norm)
 
     if netG == 'resnet_9blocks':
-        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=9, opt=opt)
+        net = ResnetGenerator(input_nc, output_nc, ngf, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=9, opt=opt)
     elif netG == 'resnet_6blocks':
-        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=6, opt=opt)
+        net = ResnetGenerator(input_nc, output_nc, ngf, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=6, opt=opt)
     elif netG == 'resnet_4blocks':
-        net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=4, opt=opt)
+        net = ResnetGenerator(input_nc, output_nc, ngf, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=4, opt=opt)
     elif netG == 'resnetvae_5blocks':
         net = ResnetVAE(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=5)
     elif netG == 'transformer':
@@ -944,7 +945,7 @@ class ResnetGenerator(nn.Module):
     We adapt Torch code and idea from Justin Johnson's neural style transfer project(https://github.com/jcjohnson/fast-neural-style)
     """
 
-    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect', no_antialias=False, no_antialias_up=False, opt=None):
+    def __init__(self, input_nc, output_nc, ngf=64, use_dropout=False, n_blocks=6, padding_type='reflect', no_antialias=False, no_antialias_up=False, opt=None):
         """Construct a Resnet-based generator
 
         Parameters:
@@ -959,33 +960,29 @@ class ResnetGenerator(nn.Module):
         assert(n_blocks >= 0)
         super(ResnetGenerator, self).__init__()
         self.opt = opt
-        if type(norm_layer) == functools.partial:
-            use_bias = norm_layer.func == nn.InstanceNorm2d
-        else:
-            use_bias = norm_layer == nn.InstanceNorm2d
 
         model = [nn.ReflectionPad2d(3),
-                 nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias),
-                 norm_layer(ngf),
+                 nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=True),
+                 nn.InstanceNorm2d(ngf),
                  nn.ReLU(True)]
 
         n_downsampling = 2
         for i in range(n_downsampling):  # add downsampling layers
             mult = 2 ** i
             if(no_antialias):
-                model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
-                          norm_layer(ngf * mult * 2),
+                model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=True),
+                          nn.InstanceNorm2d(ngf * mult * 2),
                           nn.ReLU(True)]
             else:
-                model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=1, padding=1, bias=use_bias),
-                          norm_layer(ngf * mult * 2),
+                model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=1, padding=1, bias=True),
+                          nn.InstanceNorm2d(ngf * mult * 2),
                           nn.ReLU(True),
                           Downsample(ngf * mult * 2)]
 
         mult = 2 ** n_downsampling
         for i in range(n_blocks):       # add ResNet blocks
 
-            model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+            model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=nn.InstanceNorm2d, use_dropout=use_dropout, use_bias=True)]
 
         for i in range(n_downsampling):  # add upsampling layers
             mult = 2 ** (n_downsampling - i)
@@ -993,16 +990,16 @@ class ResnetGenerator(nn.Module):
                 model += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
                                              kernel_size=3, stride=2,
                                              padding=1, output_padding=1,
-                                             bias=use_bias),
-                          norm_layer(int(ngf * mult / 2)),
+                                             bias=False),
+                          ILN(int(ngf * mult / 2)),
                           nn.ReLU(True)]
             else:
                 model += [Upsample(ngf * mult),
                           nn.Conv2d(ngf * mult, int(ngf * mult / 2),
                                     kernel_size=3, stride=1,
                                     padding=1,  # output_padding=1,
-                                    bias=use_bias),
-                          norm_layer(int(ngf * mult / 2)),
+                                    bias=False),
+                          ILN(int(ngf * mult / 2)),
                           nn.ReLU(True)]
         model += [nn.ReflectionPad2d(3)]
         model += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
@@ -1876,13 +1873,33 @@ class ResnetSimilarity(nn.Module):
         return self.linear_out(x)
 
 
+class ILN(nn.Module):
+    def __init__(self, num_features, eps=1e-5):
+        super(ILN, self).__init__()
+        self.eps = eps
+        self.rho = Parameter(torch.Tensor(1, num_features, 1, 1))
+        self.gamma = Parameter(torch.Tensor(1, num_features, 1, 1))
+        self.beta = Parameter(torch.Tensor(1, num_features, 1, 1))
+        self.rho.data.fill_(0.0)
+        self.gamma.data.fill_(1.0)
+        self.beta.data.fill_(0.0)
+
+    def forward(self, input):
+        in_mean, in_var = torch.mean(input, dim=[2, 3], keepdim=True), torch.var(input, dim=[2, 3], keepdim=True)
+        out_in = (input - in_mean) / torch.sqrt(in_var + self.eps)
+        ln_mean, ln_var = torch.mean(input, dim=[1, 2, 3], keepdim=True), torch.var(input, dim=[1, 2, 3], keepdim=True)
+        out_ln = (input - ln_mean) / torch.sqrt(ln_var + self.eps)
+        out = self.rho.expand(input.shape[0], -1, -1, -1) * out_in + (1-self.rho.expand(input.shape[0], -1, -1, -1)) * out_ln
+        out = out * self.gamma.expand(input.shape[0], -1, -1, -1) + self.beta.expand(input.shape[0], -1, -1, -1)
+
+        return out
+
+
 class NLayerSimilarity(nn.Module):
-    def __init__(self, ndf=64, n_layers=5, norm_layer=nn.InstanceNorm2d, no_antialias=False):
+    def __init__(self, ndf=64, n_layers=5, no_antialias=False):
         super(NLayerSimilarity, self).__init__()
-        if type(norm_layer) == functools.partial:  # no need to use bias as BatchNorm2d has affine parameters
-            use_bias = norm_layer.func == nn.InstanceNorm2d
-        else:
-            use_bias = norm_layer == nn.InstanceNorm2d
+        use_bias = False
+        norm_layer = ILN
 
         kw = 4
         padw = 1
