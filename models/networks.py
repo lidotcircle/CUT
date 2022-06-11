@@ -6,6 +6,7 @@ import functools
 from torch.optim import lr_scheduler
 from torch.nn.parameter import Parameter
 import numpy as np
+from .spatchgan_discriminator_pytorch import SPatchDiscriminator
 
 from .stylegan_networks import StyleGAN2Discriminator, StyleGAN2Generator, TileStyleGAN2Discriminator
 from .patch_embed import EmbeddingStem, Tokens2Image
@@ -346,6 +347,8 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal'
         net = MLPDiscriminator()
     elif netD == 'pixel':     # classify if each pixel is real or fake
         net = PixelDiscriminator(input_nc, ndf, norm_layer=norm_layer)
+    elif netD == 'spatch':
+        net = SPatchDiscriminator(stats=["mean", "max", "stddev"])
     elif 'stylegan2' in netD:
         net = StyleGAN2Discriminator(input_nc, ndf, n_layers_D, no_antialias=no_antialias, opt=opt)
     else:
