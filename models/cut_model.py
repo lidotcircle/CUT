@@ -16,7 +16,8 @@ class AngleLoss(torch.nn.Module):
         f1_ = f1.pow(2).sum(dim=1).pow(0.5)
         f2_ = f2.pow(2).sum(dim=1).pow(0.5)
         abs_cos_angle = torch.abs(f1xf2 / (f1_ * f2_ + self.eps))
-        return 1 - abs_cos_angle
+        loss = 1 - abs_cos_angle
+        return loss.mean()
 
 
 class CUTModel(BaseModel):
