@@ -62,6 +62,13 @@ class CUTModel(BaseModel):
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         self.nce_layers = [int(i) for i in self.opt.nce_layers.split(',')]
 
+        self.loss_G_GAN = 0
+        self.loss_D_real = 0
+        self.loss_D_fake = 0
+        self.loss_G = 0
+        self.loss_NEC = 0
+        self.loss_NCE_Y = 0
+
         if opt.nce_idt and self.isTrain:
             self.loss_names += ['NCE_Y']
             self.visual_names += ['idt_B']
@@ -124,12 +131,12 @@ class CUTModel(BaseModel):
         # update G
         self.set_requires_grad(self.netD, False)
         self.optimizer_G.zero_grad()
-        if self.opt.netF == 'mlp_sample':
+        if self.opt.netF == 'mlp_sample' and self.opt.lambda_NCE > 0.0:
             self.optimizer_F.zero_grad()
         self.loss_G = self.compute_G_loss()
         self.loss_G.backward()
         self.optimizer_G.step()
-        if self.opt.netF == 'mlp_sample':
+        if self.opt.netF == 'mlp_sample' and self.opt.lambda_NCE > 0.0:
             self.optimizer_F.step()
 
     def set_input(self, input):
@@ -151,9 +158,12 @@ class CUTModel(BaseModel):
             if self.flipped_for_equivariance:
                 self.real = torch.flip(self.real, [3])
 
+        if hasattr(self, 'idt_B'):
+            del self.idt_B
+
         self.fake = self.netG(self.real)
         self.fake_B = self.fake[:self.real_A.size(0)]
-        if self.opt.nce_idt:
+        if self.real.size(0) > self.real_A.size(0):
             self.idt_B = self.fake[self.real_A.size(0):]
 
     def compute_D_loss(self):
@@ -169,6 +179,11 @@ class CUTModel(BaseModel):
 
         # combine loss and calculate gradients
         self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5
+
+        if self.opt.gan_mode == 'wgangp':
+            self.loss_D_gp, gradients = networks.cal_gradient_penalty(self.netD, self.real_B, fake, self.device, lambda_gp=1)
+            self.dis_grad_norm = torch.norm(gradients).item()
+            self.loss_D = self.loss_D + self.loss_D_gp * 10
         return self.loss_D
 
     def compute_G_loss(self):
