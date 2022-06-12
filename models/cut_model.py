@@ -6,6 +6,19 @@ from .patchnce import PatchNCELoss
 import util.util as util
 
 
+class AngleLoss(torch.nn.Module):
+    def __init__(self, eps=1e-5):
+        super(AngleLoss, self).__init__()
+        self.eps = eps
+
+    def forward(self, f1, f2):
+        f1xf2 = (f1 * f2).sum(dim=1)
+        f1_ = f1.pow(2).sum(dim=1).pow(0.5)
+        f2_ = f2.pow(2).sum(dim=1).pow(0.5)
+        abs_cos_angle = torch.abs(f1xf2 / (f1_ * f2_ + self.eps))
+        return 1 - abs_cos_angle
+
+
 class CUTModel(BaseModel):
     """ This class implements CUT and FastCUT model, described in the paper
     Contrastive Learning for Unpaired Image-to-Image Translation
@@ -23,6 +36,8 @@ class CUTModel(BaseModel):
 
         parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss：GAN(G(X))')
         parser.add_argument('--lambda_NCE', type=float, default=1.0, help='weight for NCE loss: NCE(G(X), X)')
+        parser.add_argument('--lambda_Style', type=float, default=1.0, help='style loss')
+        parser.add_argument('--style_angle_loss',  type=bool, default=False, help='style loss be cos angle loss')
         parser.add_argument('--nce_idt', type=util.str2bool, nargs='?', const=True, default=False, help='use NCE loss for identity mapping: NCE(G(Y), Y))')
         parser.add_argument('--nce_layers', type=str, default='0,4,8,12,16', help='compute NCE loss on which layers')
         parser.add_argument('--nce_includes_all_negatives_from_minibatch',
@@ -58,7 +73,7 @@ class CUTModel(BaseModel):
 
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', 'NCE']
+        self.loss_names = ['G_GAN', 'D_real', 'D_fake', 'G', 'NCE', 'Style']
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         self.nce_layers = [int(i) for i in self.opt.nce_layers.split(',')]
 
@@ -67,10 +82,13 @@ class CUTModel(BaseModel):
         self.loss_D_fake = 0
         self.loss_G = 0
         self.loss_NEC = 0
+        self.loss_Style = 0
         self.loss_NCE_Y = 0
+        self.loss_Style_Y = 0
 
         if opt.nce_idt and self.isTrain:
             self.loss_names += ['NCE_Y']
+            self.loss_names += ['Style_Y']
             self.visual_names += ['idt_B']
 
         if self.isTrain:
@@ -93,6 +111,7 @@ class CUTModel(BaseModel):
                 self.criterionNCE.append(PatchNCELoss(opt).to(self.device))
 
             self.criterionIdt = torch.nn.L1Loss().to(self.device)
+            self.criterionStyle = AngleLoss().to(self.device) if self.opt.style_angle_loss else torch.nn.L1Loss().to(self.device)
             self.optimizer_G = torch.optim.Adam(self.netG.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizers.append(self.optimizer_G)
@@ -162,6 +181,8 @@ class CUTModel(BaseModel):
             del self.idt_B
 
         self.fake = self.netG(self.real)
+        if isinstance(self.fake, tuple):
+            self.fake, _ = self.fake
         self.fake_B = self.fake[:self.real_A.size(0)]
         if self.real.size(0) > self.real_A.size(0):
             self.idt_B = self.fake[self.real_A.size(0):]
@@ -197,33 +218,42 @@ class CUTModel(BaseModel):
             self.loss_G_GAN = 0.0
 
         if self.opt.lambda_NCE > 0.0:
-            self.loss_NCE = self.calculate_NCE_loss(self.real_A, self.fake_B)
+            self.loss_NCE, self.loss_Style = self.calculate_NCE_loss(self.real_A, self.fake_B)
         else:
             self.loss_NCE, self.loss_NCE_bd = 0.0, 0.0
 
         if self.opt.nce_idt and self.opt.lambda_NCE > 0.0:
-            self.loss_NCE_Y = self.calculate_NCE_loss(self.real_B, self.idt_B)
+            self.loss_NCE_Y, self.loss_Style_Y = self.calculate_NCE_loss(self.real_B, self.idt_B)
             loss_NCE_both = (self.loss_NCE + self.loss_NCE_Y) * 0.5
         else:
             loss_NCE_both = self.loss_NCE
 
-        self.loss_G = self.loss_G_GAN + loss_NCE_both
+        self.loss_G = self.loss_G_GAN + loss_NCE_both * self.opt.lambda_NCE + (self.loss_Style + self.loss_Style_Y) * self.opt.lambda_Style
         return self.loss_G
 
     def calculate_NCE_loss(self, src, tgt):
         n_layers = len(self.nce_layers)
         feat_q = self.netG(tgt, self.nce_layers, encode_only=True)
+        src_style, tgt_style = None, None
+        if isinstance(feat_q, tuple):
+            feat_q, tgt_style = feat_q
 
         if self.opt.flip_equivariance and self.flipped_for_equivariance:
             feat_q = [torch.flip(fq, [3]) for fq in feat_q]
 
         feat_k = self.netG(src, self.nce_layers, encode_only=True)
+        if isinstance(feat_k, tuple):
+            feat_k, src_style = feat_k
         feat_k_pool, sample_ids = self.netF(feat_k, self.opt.num_patches, None)
         feat_q_pool, _ = self.netF(feat_q, self.opt.num_patches, sample_ids)
 
         total_nce_loss = 0.0
         for f_q, f_k, crit, nce_layer in zip(feat_q_pool, feat_k_pool, self.criterionNCE, self.nce_layers):
-            loss = crit(f_q, f_k) * self.opt.lambda_NCE
+            loss = crit(f_q, f_k)
             total_nce_loss += loss.mean()
+        
+        style_loss = 0
+        if src_style is not None and tgt_style is not None and self.opt.lambda_Style > 0.0:
+            style_loss = self.criterionStyle(src_style, tgt_style)
 
-        return total_nce_loss / n_layers
+        return total_nce_loss / n_layers, style_loss
