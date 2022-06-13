@@ -113,8 +113,8 @@ class CUTModel(BaseModel):
                 self.criterionNCE.append(PatchNCELoss(opt).to(self.device))
 
             discriminator_lr = opt.lr
-            if self.netD == 'convtrans' or self.netD == 'transdis':
-                discriminator_lr *= 10
+            if opt.netD == 'convtrans' or opt.netD == 'transdis':
+                discriminator_lr *= 5
 
             self.criterionIdt = torch.nn.L1Loss().to(self.device)
             self.criterionStyle = AngleLoss().to(self.device) if self.opt.style_angle_loss else torch.nn.L1Loss().to(self.device)
@@ -192,6 +192,13 @@ class CUTModel(BaseModel):
         self.fake_B = self.fake[:self.real_A.size(0)]
         if self.real.size(0) > self.real_A.size(0):
             self.idt_B = self.fake[self.real_A.size(0):]
+
+    def compute_visuals(self):
+        """Calculate additional output images for visdom and HTML visualization"""
+        pred_fake = self.netD(self.fake_B)
+        pred_real = self.netD(self.real_B)
+        self.validation_loss_fake = self.criterionGAN(pred_fake, False).mean().item()
+        self.validation_loss_real = self.criterionGAN(pred_real, True).mean().item()
 
     def compute_D_loss(self):
         """Calculate GAN loss for the discriminator"""

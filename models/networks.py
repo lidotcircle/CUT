@@ -1418,11 +1418,13 @@ class ConvTransDiscriminator(nn.Module):
             revised=False,
         )
 
+        self.linear_output = nn.Sequential(nn.LayerNorm(self.embedding_dim), nn.Linear(self.embedding_dim, 32 * 32))
+
     def forward(self, input):
         x = self.model(input)
         x = self.embedding_layer(x)
         x = x[:,0]
-        return x.view(x.size(0), -1)
+        return self.linear_output(x.view(x.size(0), -1))
 
 
 class PixelDiscriminator(nn.Module):

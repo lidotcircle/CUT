@@ -1,3 +1,4 @@
+import json
 import time
 import torch
 from options.train_options import TrainOptions
@@ -61,6 +62,13 @@ if __name__ == '__main__':
                 save_result = total_iters % opt.update_html_freq == 0
                 sample_image()
                 visualizer.display_current_results(model.get_current_visuals(), batches_done, save_result)
+                validity_stats = {}
+                if hasattr(model, 'validation_loss_fake'):
+                    validity_stats['validation_loss_fake'] = model.validation_loss_fake
+                if hasattr(model, 'validation_loss_real'):
+                    validity_stats['validation_loss_real'] = model.validation_loss_real
+                if len(validity_stats) > 0:
+                    visualizer.logger.send(validity_stats, "validity_stats", True)
 
             if total_iters % opt.print_freq == 0:    # print training losses and save logging information to the disk
                 losses = model.get_current_losses()

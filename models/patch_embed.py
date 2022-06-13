@@ -50,7 +50,7 @@ class EmbeddingStem(nn.Module):
             num_patches = self.grid_size[0] * self.grid_size[1]
 
             if cls_head:
-                self.cls_token = nn.Parameter(torch.full((1, 1, embedding_dim), 0.5))
+                self.cls_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
                 num_patches += 1
 
             # positional embedding
