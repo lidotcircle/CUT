@@ -7,7 +7,7 @@ from torch.optim import lr_scheduler
 import numpy as np
 from .stylegan_networks import StyleGAN2Discriminator, StyleGAN2Generator, TileStyleGAN2Discriminator
 from .spatchgan_discriminator_pytorch import SPatchDiscriminator
-from .transtyle import Transtyle
+from .transtyle import Transtyle, TransDiscriminator
 
 ###############################################################################
 # Helper Functions
@@ -329,6 +329,8 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal'
         net = PixelDiscriminator(input_nc, ndf, norm_layer=norm_layer)
     elif netD == 'spatch':
         net = SPatchDiscriminator(stats=['mean', 'max','stddev'])
+    elif netD == 'transdis':
+        net = TransDiscriminator()
     elif 'stylegan2' in netD:
         net = StyleGAN2Discriminator(input_nc, ndf, n_layers_D, no_antialias=no_antialias, opt=opt)
     else:

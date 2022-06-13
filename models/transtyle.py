@@ -277,3 +277,12 @@ class Transtyle(torch.nn.Module):
             return feat, feats, styles  # return both output and intermediate features
         else:
             return feat, styles
+
+
+class TransDiscriminator(torch.nn.Module):
+    def __init__(self):
+        super(TransDiscriminator, self).__init__()
+        self.encoder = StyleFormer(1024, num_layers=6)
+
+    def forward(self, input):
+        return self.encoder(input)
