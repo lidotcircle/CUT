@@ -8,6 +8,8 @@ import numpy as np
 from .stylegan_networks import StyleGAN2Discriminator, StyleGAN2Generator, TileStyleGAN2Discriminator
 from .spatchgan_discriminator_pytorch import SPatchDiscriminator
 from .transtyle import Transtyle, TransDiscriminator
+from .transformer import Transformer
+from .patch_embed import EmbeddingStem
 
 ###############################################################################
 # Helper Functions
@@ -249,7 +251,7 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
     norm_layer = get_norm_layer(norm_type=norm)
 
     if netG == 'transtyle':
-        net = Transtyle(input_nc, output_nc, ngf, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=9, opt=opt)
+        net = Transtyle(input_nc, output_nc, ngf, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=opt.resnet_num_blocks, opt=opt)
     elif netG == 'resnet_9blocks':
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=9, opt=opt)
     elif netG == 'resnet_6blocks':
@@ -329,6 +331,8 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal'
         net = PixelDiscriminator(input_nc, ndf, norm_layer=norm_layer)
     elif netD == 'spatch':
         net = SPatchDiscriminator(stats=['mean', 'max','stddev'])
+    elif netD == 'convtrans':
+        net = ConvTransDiscriminator(input_nc)
     elif netD == 'transdis':
         net = TransDiscriminator()
     elif 'stylegan2' in netD:
@@ -1346,6 +1350,79 @@ class NLayerDiscriminator(nn.Module):
     def forward(self, input):
         """Standard forward."""
         return self.model(input)
+
+class ConvTransDiscriminator(nn.Module):
+    """Defines a PatchGAN discriminator"""
+
+    def __init__(self, input_nc, ndf=32, n_layers=3, norm_layer=nn.BatchNorm2d):
+        """Construct a PatchGAN discriminator
+
+        Parameters:
+            input_nc (int)  -- the number of channels in input images
+            ndf (int)       -- the number of filters in the last conv layer
+            n_layers (int)  -- the number of conv layers in the discriminator
+            norm_layer      -- normalization layer
+        """
+        super(ConvTransDiscriminator, self).__init__()
+        if type(norm_layer) == functools.partial:  # no need to use bias as BatchNorm2d has affine parameters
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        kw = 3
+        padw = 1
+        sequence = [nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=1, padding=padw), nn.LeakyReLU(0.2, True), Downsample(ndf)]
+        nf_mult = 1
+        nf_mult_prev = 1
+        for n in range(1, n_layers):  # gradually increase the number of filters
+            nf_mult_prev = nf_mult
+            nf_mult = min(2 ** n, 8)
+            sequence += [
+                nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias),
+                norm_layer(ndf * nf_mult),
+                nn.LeakyReLU(0.2, True),
+                Downsample(ndf * nf_mult)]
+
+        nf_mult_prev = nf_mult
+        nf_mult = min(2 ** n_layers, 8)
+        self.model = nn.Sequential(*sequence)
+
+        self.image_size = 256 // (2 ** n_layers)
+        self.patch_size = self.image_size // 16
+        self.embedding_dim = 384
+        # embedding layer
+        self.embedding_layer = EmbeddingStem(
+            image_size=self.image_size,
+            patch_size=self.patch_size,
+            channels=ndf * nf_mult_prev,
+            embedding_dim=self.embedding_dim,
+            hidden_dims=None,
+            conv_patch=True,
+            linear_patch=False,
+            conv_stem=False,
+            conv_stem_original=True,
+            conv_stem_scaled_relu=False,
+            position_embedding_dropout=0,
+            cls_head=True,
+        )
+
+        # transformer
+        self.transformer = Transformer(
+            dim=self.embedding_dim,
+            depth=6,
+            heads=4,
+            mlp_ratio=1.0,
+            attn_dropout=0,
+            dropout=0,
+            qkv_bias=True,
+            revised=False,
+        )
+
+    def forward(self, input):
+        x = self.model(input)
+        x = self.embedding_layer(x)
+        x = x[:,0]
+        return x.view(x.size(0), -1)
 
 
 class PixelDiscriminator(nn.Module):
