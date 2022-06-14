@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from .styleformer import StyleFormer
+from .cvt import CvT
 
 
 class AdaIN(nn.Module):
@@ -173,7 +174,18 @@ class ResnetBlock(nn.Module):
 
 
 class Transtyle(torch.nn.Module):
-    def __init__(self, input_nc=3, output_nc=3, ngf=64, use_dropout=False, n_blocks=6, padding_type='reflect', no_antialias=False, no_antialias_up=False, opt=None):
+    def __init__(
+        self,
+        input_nc=3,
+        output_nc=3,
+        ngf=64,
+        use_dropout=False,
+        n_blocks=6,
+        padding_type='reflect',
+        no_antialias=False,
+        no_antialias_up=False,
+        style_extractor='cvt',
+        opt=None):
         """Construct a Resnet-based generator
 
         Parameters:
@@ -215,34 +227,44 @@ class Transtyle(torch.nn.Module):
         self.adaIN_layers = []
         self.num_style_outputs = 0
         self.style_start_and_len = {}
-        for i in range(n_blocks - int(n_blocks / 2)):
+        def add_adaIN(dim):
             self.adaIN_layers.append(len(model))
-            self.style_start_and_len[len(model)] = (self.num_style_outputs, ngf * mult * 2)
+            self.style_start_and_len[len(model)] = (self.num_style_outputs, dim * 2)
+            self.num_style_outputs += dim * 2
+
+        for i in range(n_blocks - int(n_blocks / 2)):
+            add_adaIN(ngf * mult)
             model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=AdaIN, use_dropout=use_dropout, use_bias=use_bias)]
-            self.num_style_outputs += ngf * mult * 2
 
         for i in range(n_downsampling):  # add upsampling layers
             mult = 2 ** (n_downsampling - i)
             if no_antialias_up:
-                model += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
+                model.append(nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
                                              kernel_size=3, stride=2,
                                              padding=1, output_padding=1,
-                                             bias=use_bias),
-                          nn.InstanceNorm2d(int(ngf * mult / 2)),
-                          nn.ReLU(True)]
+                                             bias=use_bias))
+                add_adaIN(int(ngf * mult / 2))
+                model.append(AdaIN(int(ngf * mult / 2)))
+                model.append(nn.ReLU(True))
             else:
                 model += [Upsample(ngf * mult),
                           nn.Conv2d(ngf * mult, int(ngf * mult / 2),
                                     kernel_size=3, stride=1,
                                     padding=1,  # output_padding=1,
-                                    bias=use_bias),
-                          nn.InstanceNorm2d(int(ngf * mult / 2)),
-                          nn.ReLU(True)]
+                                    bias=use_bias)]
+                add_adaIN(int(ngf * mult / 2))
+                model.append(AdaIN(int(ngf * mult / 2)))
+                model.append(nn.ReLU(True))
         model += [nn.ReflectionPad2d(3)]
         model += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
         model += [nn.Tanh()]
 
-        self.styleformer = StyleFormer(num_outputs = self.num_style_outputs)
+        if style_extractor == 'cvt':
+            self.styleformer = CvT(num_classes=self.num_style_outputs)
+        elif style_extractor == 'vit':
+            self.styleformer = StyleFormer(num_outputs=self.num_style_outputs)
+        else:
+            raise NotImplementedError()
         self.model = nn.Sequential(*model)
 
     def forward(self, input, layers=[], encode_only=False):
