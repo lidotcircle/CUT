@@ -1,3 +1,4 @@
+from turtle import forward
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,6 +11,7 @@ from .spatchgan_discriminator_pytorch import SPatchDiscriminator
 from .transtyle import Transtyle, TransDiscriminator
 from .transformer import Transformer
 from .patch_embed import EmbeddingStem
+from .cvt import CvT
 
 ###############################################################################
 # Helper Functions
@@ -335,6 +337,8 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal'
         net = ConvTransDiscriminator(input_nc)
     elif netD == 'transdis':
         net = TransDiscriminator()
+    elif netD == 'cvt':
+        net = CVTDiscriminator()
     elif 'stylegan2' in netD:
         net = StyleGAN2Discriminator(input_nc, ndf, n_layers_D, no_antialias=no_antialias, opt=opt)
     else:
@@ -1350,6 +1354,14 @@ class NLayerDiscriminator(nn.Module):
     def forward(self, input):
         """Standard forward."""
         return self.model(input)
+
+class CVTDiscriminator(nn.Module):
+    def __init__(self):
+        super(CVTDiscriminator, self).__init__()
+        self.cvt = CvT(num_classes=32*32)
+
+    def forward(self, image):
+        return self.cvt(image)
 
 class ConvTransDiscriminator(nn.Module):
     """Defines a PatchGAN discriminator"""
