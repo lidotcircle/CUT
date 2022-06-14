@@ -25,6 +25,8 @@ def translate_images(generator: nn.Module, src_images_dir: str, dst_images_dir: 
                 image_names.append(os.path.basename(img_path))
             src = torch.stack(image_values).to(device)
             tgt = generator(src)
+            if isinstance(tgt, tuple):
+                tgt, _ = tgt
 
             for i, name in enumerate(image_names):
                 img = tgt[i]
