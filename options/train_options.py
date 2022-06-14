@@ -36,6 +36,10 @@ class TrainOptions(BaseOptions):
         parser.add_argument('--phase', type=str, default='train', help='train, val, test, etc')
         parser.add_argument('--pretrained_name', type=str, default=None, help='resume training from another checkpoint')
 
+        # metrics evaluation
+        parser.add_argument('--metric_start_epoch', type=int, default=50, help='start epoch of evaluation metrics')
+        parser.add_argument('--metric_eval_freq', type=int, default=10, help='metrics evaluation frequency')
+
         # training parameters
         parser.add_argument('--n_epochs', type=int, default=200, help='number of epochs with the initial learning rate')
         parser.add_argument('--n_epochs_decay', type=int, default=200, help='number of epochs to linearly decay learning rate to zero')

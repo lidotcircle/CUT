@@ -3,6 +3,7 @@ import torch
 from collections import OrderedDict
 from abc import ABC, abstractmethod
 from . import networks
+from pytorch_fid.fid_score import calculate_fid_given_paths
 
 
 class BaseModel(ABC):
@@ -259,3 +260,8 @@ class BaseModel(ABC):
 
     def translate_test_images(self, epoch = 0):
         pass
+
+    def eval_fid(self, epoch = 0) -> float:
+        generated_imgs_dir = self.translate_test_images(epoch)
+        real_imgs_dir = os.path.join(self.opt.dataroot, 'testB')
+        return calculate_fid_given_paths([generated_imgs_dir, real_imgs_dir], device=self.device, batch_size=50, dims=2048)
