@@ -3,7 +3,9 @@ import torch
 from .base_model import BaseModel
 from . import networks
 from .patchnce import PatchNCELoss
+from util.translate_images import translate_images
 import util.util as util
+import os
 
 
 class AngleLoss(torch.nn.Module):
@@ -199,6 +201,12 @@ class CUTModel(BaseModel):
         pred_real = self.netD(self.real_B)
         self.validation_loss_fake = self.criterionGAN(pred_fake, False).mean().item()
         self.validation_loss_real = self.criterionGAN(pred_real, True).mean().item()
+    
+    def translate_test_images(self, epoch = 0):
+        src_dir = os.path.join(self.opt.dataroot, "testA")
+        tgt_dir = "%s_eval_%s" % (src_dir, epoch)
+        translate_images(self.netG, src_dir, tgt_dir, self.device)
+        return tgt_dir
 
     def compute_D_loss(self):
         """Calculate GAN loss for the discriminator"""

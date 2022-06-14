@@ -256,3 +256,6 @@ class BaseModel(ABC):
 
     def generate_visuals_for_evaluation(self, data, mode):
         return {}
+
+    def translate_test_images(self, epoch = 0):
+        pass
