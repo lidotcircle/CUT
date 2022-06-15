@@ -75,6 +75,7 @@ class CUTModel(BaseModel):
         parser.add_argument('--ada_target', type=float, default=0.1, help='threshold of r_v')
         parser.add_argument('--ada_speed', type=int, default=500, help='ADA speed')
         parser.add_argument('--ada_cuda', action='store_true', help='ADA pipe ops implementation')
+        parser.add_argument('--ada_augment_p', type=float, default=0.0, help='initial augment p')
 
         parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss：GAN(G(X))')
         parser.add_argument('--lambda_NCE', type=float, default=1.0, help='weight for NCE loss: NCE(G(X), X)')
@@ -122,7 +123,7 @@ class CUTModel(BaseModel):
         os.environ["ADA_CUDA"] = "YES" if opt.ada_cuda else "NO"
 
         if self.enable_ADA:
-            self.augment_p = 0
+            self.augment_p = opt.ada_augment_p
             self.augment_pipe_dis = AugmentPipe(
                 rotate=1,
                 brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1,
