@@ -52,7 +52,7 @@ class DiscriminatorStats:
         self.loss_d_val = []
         self.loss_g_adv = []
         self.loss_d_train = []
-        return np.abs((l_d_val - l_d_train) / max(np.abs(l_g_adv - l_d_train), 1e-5))
+        return (l_d_val - l_d_train) / max(np.abs(l_g_adv - l_d_train), 1e-5)
 
 
 class CUTModel(BaseModel):
