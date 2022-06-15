@@ -1,5 +1,7 @@
 import numpy as np
 import torch
+from .augment  import AugmentPipe
+from .utils import computeModelGradientsNorm1, computeModelParametersNorm1
 from .base_model import BaseModel
 from . import networks
 from .patchnce import PatchNCELoss
@@ -22,6 +24,37 @@ class AngleLoss(torch.nn.Module):
         return loss.mean()
 
 
+class DiscriminatorStats:
+    def __init__(self):
+        self.loss_d_val = []
+        self.loss_g_adv = []
+        self.loss_d_train = []
+
+    def report_validation_loss(self, value):
+        assert isinstance(value, float)
+        self.loss_d_val.append(value)
+
+    def report_train_loss(self, value):
+        assert isinstance(value, float)
+        self.loss_d_train.append(value)
+
+    def report_generated_loss(self, value):
+        assert isinstance(value, float)
+        self.loss_g_adv.append(value)
+    
+    def get_r_v(self):
+        assert len(self.loss_d_train) > 0
+        assert len(self.loss_g_adv) > 0
+        assert len(self.loss_d_train) > 0
+        l_d_val = np.mean(self.loss_d_val)
+        l_g_adv = np.mean(self.loss_g_adv)
+        l_d_train = np.mean(self.loss_d_train)
+        self.loss_d_val = []
+        self.loss_g_adv = []
+        self.loss_d_train = []
+        return np.abs((l_d_val - l_d_train) / max(np.abs(l_g_adv - l_d_train), 1e-5))
+
+
 class CUTModel(BaseModel):
     """ This class implements CUT and FastCUT model, described in the paper
     Contrastive Learning for Unpaired Image-to-Image Translation
@@ -36,6 +69,11 @@ class CUTModel(BaseModel):
         """  Configures options specific for CUT model
         """
         parser.add_argument('--CUT_mode', type=str, default="CUT", choices='(CUT, cut, FastCUT, fastcut)')
+
+        # adaptive discriminator augmentation
+        parser.add_argument('--ada', type=bool, default=False, help='adaptive discriminator augmentation')
+        parser.add_argument('--ada_target', type=float, default=0.1, help='threshold of r_v')
+        parser.add_argument('--ada_speed', type=int, default=500, help='ADA speed')
 
         parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss：GAN(G(X))')
         parser.add_argument('--lambda_NCE', type=float, default=1.0, help='weight for NCE loss: NCE(G(X), X)')
@@ -74,6 +112,22 @@ class CUTModel(BaseModel):
 
     def __init__(self, opt):
         BaseModel.__init__(self, opt)
+
+        self.enable_ADA = opt.ada
+        self.ada_speed = opt.ada_speed
+        self.ada_target = opt.ada_target
+        self.ada_r_v = 0
+        self.dis_stats = DiscriminatorStats()
+
+        if self.enable_ADA:
+            self.augment_p = 0
+            self.augment_pipe_dis = AugmentPipe(
+                rotate=1,
+                brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1,
+                imgfilter=1,
+                noise=1
+            ).train().requires_grad_(False).to(self.device)
+            self.augment_pipe_dis.p.copy_(torch.as_tensor(self.augment_p))
 
         # specify the training losses you want to print out.
         # The training/test scripts will call <BaseModel.get_current_losses>
@@ -162,6 +216,15 @@ class CUTModel(BaseModel):
             self.optimizer_F.zero_grad()
         self.loss_G = self.compute_G_loss()
         self.loss_G.backward()
+
+        self.g_param_norm, self.g_num_params = computeModelParametersNorm1(self.netG)
+        self.g_grad_norm, g_num_params = computeModelGradientsNorm1(self.netG)
+        assert g_num_params == self.g_num_params
+        self.g_param_norm = self.g_param_norm.item()
+        self.g_grad_norm = self.g_grad_norm.item()
+        self.g_param_norm_avg = self.g_param_norm / self.g_num_params
+        self.g_grad_norm_avg = self.g_grad_norm / self.g_num_params
+
         self.optimizer_G.step()
         if self.opt.netF == 'mlp_sample' and self.opt.lambda_NCE > 0.0:
             self.optimizer_F.step()
@@ -201,6 +264,16 @@ class CUTModel(BaseModel):
         pred_real = self.netD(self.real_B)
         self.validation_loss_fake = self.criterionGAN(pred_fake, False).mean().item()
         self.validation_loss_real = self.criterionGAN(pred_real, True).mean().item()
+        self.dis_stats.report_validation_loss(self.validation_loss_real)
+        self.adjust_augment_p()
+
+    def adjust_augment_p(self):
+        if not self.enable_ADA:
+            return
+        self.ada_r_v = self.dis_stats.get_r_v()
+        adjust = np.sign(self.ada_r_v - self.ada_target) * (self.opt.display_freq) / (self.ada_speed * 1000)
+        self.augment_p = min(max(self.augment_pipe_dis.p.item() + adjust, 0), 1)
+        self.augment_pipe_dis.p.copy_(torch.as_tensor(self.augment_p))
     
     def translate_test_images(self, epoch = 0):
         src_dir = os.path.join(self.opt.dataroot, "testA")
@@ -211,13 +284,19 @@ class CUTModel(BaseModel):
     def compute_D_loss(self):
         """Calculate GAN loss for the discriminator"""
         fake = self.fake_B.detach()
+        real = self.real_B
+        if self.enable_ADA:
+            fake = self.augment_pipe_dis(fake)
+            real = self.augment_pipe_dis(real)
+
         # Fake; stop backprop to the generator by detaching fake_B
         pred_fake = self.netD(fake)
         self.loss_D_fake = self.criterionGAN(pred_fake, False).mean()
         # Real
-        self.pred_real = self.netD(self.real_B)
+        self.pred_real = self.netD(real)
         loss_D_real = self.criterionGAN(self.pred_real, True)
         self.loss_D_real = loss_D_real.mean()
+        self.dis_stats.report_train_loss(self.loss_D_real.item())
 
         # combine loss and calculate gradients
         self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5
@@ -231,12 +310,17 @@ class CUTModel(BaseModel):
     def compute_G_loss(self):
         """Calculate GAN and NCE loss for the generator"""
         fake = self.fake_B
+        if self.enable_ADA:
+            fake = self.augment_pipe_dis(fake)
+
         # First, G(A) should fake the discriminator
         if self.opt.lambda_GAN > 0.0:
             pred_fake = self.netD(fake)
             self.loss_G_GAN = self.criterionGAN(pred_fake, True).mean() * self.opt.lambda_GAN
+            self.dis_stats.report_generated_loss(self.loss_G_GAN.item())
         else:
             self.loss_G_GAN = 0.0
+            self.dis_stats.report_train_loss(0)
 
         if self.opt.lambda_NCE > 0.0:
             self.loss_NCE, self.loss_Style = self.calculate_NCE_loss(self.real_A, self.fake_B)

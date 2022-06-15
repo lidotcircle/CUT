@@ -73,11 +73,20 @@ if __name__ == '__main__':
                     validity_stats['validation_loss_fake'] = model.validation_loss_fake
                 if hasattr(model, 'validation_loss_real'):
                     validity_stats['validation_loss_real'] = model.validation_loss_real
+                if hasattr(model, 'augment_p'):
+                    validity_stats['augment_p'] = model.augment_p
+                if hasattr(model, 'ada_r_v'):
+                    validity_stats['ada_r_v'] = model.ada_r_v
                 if len(validity_stats) > 0:
                     visualizer.logger.send(validity_stats, "validity_stats", True)
+                    print(json.dumps(validity_stats))
 
             if total_iters % opt.print_freq == 0:    # print training losses and save logging information to the disk
                 losses = model.get_current_losses()
+                losses['generator_param_norm'] = model.g_param_norm
+                losses['generator_grad_norm'] = model.g_grad_norm
+                losses['generator_param_norm_avg'] = model.g_param_norm_avg
+                losses['generator_grad_norm_avg'] = model.g_grad_norm_avg
                 visualizer.print_current_losses(batches_done, epoch_iter, losses, optimize_time, t_data)
                 visualizer.plot_current_losses(batches_done, float(epoch_iter) / dataset_size, losses)
 
