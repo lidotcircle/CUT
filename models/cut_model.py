@@ -71,9 +71,10 @@ class CUTModel(BaseModel):
         parser.add_argument('--CUT_mode', type=str, default="CUT", choices='(CUT, cut, FastCUT, fastcut)')
 
         # adaptive discriminator augmentation
-        parser.add_argument('--ada', type=bool, default=False, help='adaptive discriminator augmentation')
+        parser.add_argument('--ada', action='store_true', help='adaptive discriminator augmentation')
         parser.add_argument('--ada_target', type=float, default=0.1, help='threshold of r_v')
         parser.add_argument('--ada_speed', type=int, default=500, help='ADA speed')
+        parser.add_argument('--ada_cuda', action='store_true', help='ADA pipe ops implementation')
 
         parser.add_argument('--lambda_GAN', type=float, default=1.0, help='weight for GAN loss：GAN(G(X))')
         parser.add_argument('--lambda_NCE', type=float, default=1.0, help='weight for NCE loss: NCE(G(X), X)')
@@ -118,6 +119,7 @@ class CUTModel(BaseModel):
         self.ada_target = opt.ada_target
         self.ada_r_v = 0
         self.dis_stats = DiscriminatorStats()
+        os.environ["ADA_CUDA"] = "YES" if opt.ada_cuda else "NO"
 
         if self.enable_ADA:
             self.augment_p = 0
