@@ -63,6 +63,13 @@ class WDVisualizer():
 
     def display_current_results(self, visuals, epoch, save_result):
         batch_size = visuals['real_A'].shape[0]
+        if batch_size > 5:
+            for _, k in enumerate(visuals):
+                v = visuals[k]
+                if isinstance(v, torch.Tensor) and len(v.shape) > 0 and v.size(0) == batch_size:
+                    visuals[k] = v[:5]
+            batch_size = 5
+
         image_1 = make_grid(torch.cat([ visuals['real_A'], visuals['fake_B'] ], dim=0), nrow = batch_size, normalize = True)
         if 'real_B' in visuals and 'idt_B' in visuals:
             image_2 = make_grid(torch.cat([ visuals['real_B'], visuals['idt_B'] ],  dim=0), nrow = batch_size, normalize = True)

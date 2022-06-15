@@ -16,7 +16,7 @@ if __name__ == '__main__':
     model = create_model(opt)      # create a model given opt.model and other options
     print('The number of training images = %d' % dataset_size)
 
-    test_dataset = create_dataset(util.copyconf(opt, phase="test", batch_size=5))
+    test_dataset = create_dataset(util.copyconf(opt, phase="test", batch_size=opt.val_batch_size))
     def sample_image():
         _, data = next(enumerate(test_dataset))
         model.set_input(data)  # unpack data from data loader
