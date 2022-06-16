@@ -176,7 +176,6 @@ class CUTModel(BaseModel):
                 discriminator_lr *= 5
 
             self.criterionIdt = torch.nn.L1Loss().to(self.device)
-            self.criterionStyle = AngleLoss().to(self.device) if self.opt.style_angle_loss else torch.nn.L1Loss().to(self.device)
             self.optimizer_G = torch.optim.Adam(self.netG.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=discriminator_lr, betas=(opt.beta1, opt.beta2))
             self.optimizers.append(self.optimizer_G)
