@@ -93,10 +93,9 @@ if __name__ == '__main__':
             iter_data_time = time.time()
 
         if epoch >= opt.metric_start_epoch and (epoch - opt.epoch_count) % opt.metric_eval_freq == 0:
-            stats = {}
-            stats['fid'] = model.eval_fid(epoch=epoch)
-            stats['epoch'] = epoch
-            visualizer.logger.send(stats, "Metrics", True)
+            metrics_stats = model.eval_metrics(epoch=epoch)
+            metrics_stats['epoch'] = epoch
+            visualizer.logger.send(metrics_stats, "Metrics", True)
 
         if epoch % opt.save_epoch_freq == 0:              # cache our model every <save_epoch_freq> epochs
             print('saving the model at the end of epoch %d, iters %d' % (epoch, total_iters))

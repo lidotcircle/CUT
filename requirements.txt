@@ -4,4 +4,3 @@ dominate>=2.4.0
 visdom>=0.1.8.8
 packaging
 GPUtil>=1.4.0
-pytorch-fid==0.2.1
