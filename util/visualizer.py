@@ -69,13 +69,22 @@ class WDVisualizer():
                 if isinstance(v, torch.Tensor) and len(v.shape) > 0 and v.size(0) == batch_size:
                     visuals[k] = v[:5]
             batch_size = 5
+        
+        image_name_list = [ 'real_A', 'fake_B', 'rec_A', 'idt_B', 'real_B', 'fake_A', 'rec_B', 'idt_A']
+        image_list = []
+        for name in image_name_list:
+            if name in visuals:
+                img: torch.Tensor = visuals[name]
+                if img.size(0) < batch_size:
+                    img = torch.cat([
+                        img,
+                        torch.zeros(
+                            (batch_size - img.size(0), img.size(1), img.size(2), img.size(3)),
+                            dtype=img.dtype).to(img.device)], dim=0)
+                image_list.append(img)
 
-        image_1 = make_grid(torch.cat([ visuals['real_A'], visuals['fake_B'] ], dim=0), nrow = batch_size, normalize = True)
-        if 'real_B' in visuals and 'idt_B' in visuals:
-            image_2 = make_grid(torch.cat([ visuals['real_B'], visuals['idt_B'] ],  dim=0), nrow = batch_size, normalize = True)
-            image = torch.cat([image_1, image_2], dim=1)
-        else:
-            image = image_1
+        image_tensor = torch.cat(image_list, dim=0)
+        image = make_grid(image_tensor, nrow = batch_size, normalize = True)
         image_path = "%s/%s.png" % ("helloimages", epoch)
         save_image(image, image_path)
         self.logger.sendBlobFile(image_path, "%s.png" % (epoch), "/validation_image/%s-%s/%s.png" % (self.logger.group_prefix, "hellodataset", epoch), "validation_image")

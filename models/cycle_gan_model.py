@@ -93,6 +93,7 @@ class CycleGANModel(BaseModel):
             self.fake_B_pool = ImagePool(opt.pool_size)  # create image buffer to store previously generated images
             # define loss functions
             self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)  # define GAN loss.
+            self.criterionStyle = networks.GANLoss('lsgan').to(self.device)
             self.criterionCycle = torch.nn.L1Loss()
             self.criterionIdt = torch.nn.L1Loss()
             # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
@@ -140,7 +141,7 @@ class CycleGANModel(BaseModel):
         loss_D_fake = self.criterionGAN(pred_fake, False)
         # Combined loss and calculate gradients
         loss_D = (loss_D_real + loss_D_fake) * 0.5
-        if self.opt.amp:
+        if hasattr(self.opt, 'amp') and self.opt.amp:
             with amp.scale_loss(loss_D, self.optimizer_D) as scaled_loss:
                 scaled_loss.backward()
         else:
@@ -184,13 +185,13 @@ class CycleGANModel(BaseModel):
         self.loss_cycle_B = self.criterionCycle(self.rec_B, self.real_B) * lambda_B
         # combined loss and calculate gradients
         self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B
-        if self.opt.amp:
+        if hasattr(self.opt, 'amp') and self.opt.amp:
             with amp.scale_loss(self.loss_G, self.optimizer_G) as scaled_loss:
                 scaled_loss.backward()
         else:
             self.loss_G.backward()
 
-    def data_dependent_initialize(self):
+    def data_dependent_initialize(self, data):
         return
 
     def generate_visuals_for_evaluation(self, data, mode):
