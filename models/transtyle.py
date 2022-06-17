@@ -269,7 +269,7 @@ class Transtyle(torch.nn.Module):
         self.style_logit_output = nn.Linear(self.num_style_outputs, 256)
         self.model = nn.Sequential(*model)
 
-    def forward(self, input, layers=[], encode_only=False):
+    def forward(self, input, layers=[], encode_only=False, return_style=False):
         feat = input
         feats = []
         styles = None
@@ -297,12 +297,21 @@ class Transtyle(torch.nn.Module):
                 pass
             if (len(layers) == 0 or layer_id == layers[-1]) and encode_only:
                 # print('encoder only return features')
-                return feats, style_logit  # return intermediate features alone; stop in the last layers
+                if return_style:
+                    return feats, style_logit  # return intermediate features alone; stop in the last layers
+                else:
+                    return feats
 
         if len(layers) > 0:
-            return feat, feats, style_logit  # return both output and intermediate features
+            if return_style:
+                return feat, feats, style_logit  # return both output and intermediate features
+            else:
+                return feat, feats  # return both output and intermediate features
         else:
-            return feat, style_logit
+            if return_style:
+                return feat, style_logit
+            else:
+                return feat
 
 
 class TransDiscriminator(torch.nn.Module):

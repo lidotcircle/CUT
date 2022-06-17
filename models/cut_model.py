@@ -81,7 +81,6 @@ class CUTModel(BaseModel):
         parser.add_argument('--lambda_NCE', type=float, default=1.0, help='weight for NCE loss: NCE(G(X), X)')
         parser.add_argument('--lambda_Style', type=float, default=1.0, help='style loss')
         parser.add_argument('--style_angle_loss',  type=bool, default=False, help='style loss be cos angle loss')
-        parser.add_argument('--resnet_num_blocks', type=int, default=9, help='number of blocks for resnet transtyle generator')
         parser.add_argument('--nce_idt', type=util.str2bool, nargs='?', const=True, default=False, help='use NCE loss for identity mapping: NCE(G(Y), Y))')
         parser.add_argument('--nce_layers', type=str, default='0,4,8,12,16', help='compute NCE loss on which layers')
         parser.add_argument('--nce_includes_all_negatives_from_minibatch',
