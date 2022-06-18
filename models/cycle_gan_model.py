@@ -48,6 +48,8 @@ class CycleGANModel(BaseModel):
             parser.add_argument('--lambda_A', type=float, default=10.0, help='weight for cycle loss (A -> B -> A)')
             parser.add_argument('--lambda_B', type=float, default=10.0, help='weight for cycle loss (B -> A -> B)')
             parser.add_argument('--lambda_identity', type=float, default=0.5, help='use identity mapping. Setting lambda_identity other than 0 has an effect of scaling the weight of the identity mapping loss. For example, if the weight of the identity loss should be 10 times smaller than the weight of the reconstruction loss, please set lambda_identity = 0.1')
+            parser.add_argument('--pretrained_A', type=str, required=True, help='pretrained feature extractor for A')
+            parser.add_argument('--pretrained_B', type=str, required=True, help='pretrained feature extractor for B')
 
         return parser
 
@@ -78,9 +80,11 @@ class CycleGANModel(BaseModel):
         # The naming is different from those used in the paper.
         # Code (vs. paper): G_A (G), G_B (F), D_A (D_Y), D_B (D_X)
         self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.normG,
-                                        not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias, opt.no_antialias_up, self.gpu_ids, opt=opt)
+                                        not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias, 
+                                        opt.no_antialias_up, self.gpu_ids, pretrained_EXT=opt.pretrained_A, opt=opt)
         self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, opt.netG, opt.normG,
-                                        not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias, opt.no_antialias_up, self.gpu_ids, opt=opt)
+                                        not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias,
+                                        opt.no_antialias_up, self.gpu_ids, pretrained_EXT=opt.pretrained_B, opt=opt)
 
         if self.isTrain:  # define discriminators
             self.netD_A = networks.define_D(opt.output_nc, opt.ndf, opt.netD,

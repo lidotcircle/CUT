@@ -12,6 +12,7 @@ from .transtyle import Transtyle, TransDiscriminator
 from .transformer import Transformer
 from .patch_embed import EmbeddingStem
 from .cvt import CvT
+from .pregan_networks import ResnetGenerator as PreResnetGenerator
 
 ###############################################################################
 # Helper Functions
@@ -222,7 +223,7 @@ def init_net(net, init_type='normal', init_gain=0.02, gpu_ids=[], debug=False, i
 
 
 def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, init_type='normal',
-             init_gain=0.02, no_antialias=False, no_antialias_up=False, gpu_ids=[], opt=None):
+             init_gain=0.02, no_antialias=False, no_antialias_up=False, gpu_ids=[], pretrained_EXT: str = None, opt=None):
     """Create a generator
 
     Parameters:
@@ -254,6 +255,8 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
 
     if netG == 'transtyle':
         net = Transtyle(input_nc, output_nc, ngf, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=opt.resnet_num_blocks, opt=opt)
+    if netG == 'resnet_pre':
+        net = PreResnetGenerator(input_nc, output_nc, pretrained_EXT, ngf)
     elif netG == 'resnet_9blocks':
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, no_antialias=no_antialias, no_antialias_up=no_antialias_up, n_blocks=9, opt=opt)
     elif netG == 'resnet_6blocks':
