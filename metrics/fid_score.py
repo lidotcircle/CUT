@@ -127,7 +127,39 @@ def get_activations(files, model, batch_size=50, dims=2048, device='cpu',
 
     return pred_arr
 
+def get_activations_from_tensor(tensors, model, batch_size=50, dims=2048, device='cpu'):
+    model.eval()
 
+    pred_arr = np.empty((tensors.size(0), dims))
+    nbatch = math.ceil(tensors.size(0) / batch_size)
+    start_idx = 0
+    for i in range(nbatch):
+        batch = tensors[i:i+batch_size].to(device)
+
+        with torch.no_grad():
+            pred = model(batch)[0]
+
+        # If model output is not scalar, apply global spatial average pooling.
+        # This happens if you choose a dimensionality not equal 2048.
+        if pred.size(2) != 1 or pred.size(3) != 1:
+            pred = adaptive_avg_pool2d(pred, output_size=(1, 1))
+
+        pred = pred.squeeze(3).squeeze(2).cpu().numpy()
+
+        pred_arr[start_idx:start_idx + pred.shape[0]] = pred
+        start_idx = start_idx + pred.shape[0]
+
+    return pred_arr
+
+class ActivationConvertor:
+    def __init__(self, dims=2048, device='cpu', use_fid_inception=False) -> None:
+        block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[dims]
+        self.dims = dims
+        self.device = device
+        self.model = InceptionV3([block_idx], use_fid_inception=use_fid_inception).to(device)
+    
+    def __call__(self, tensor):
+        return get_activations_from_tensor(tensor, self.model, dims=self.dims, device=self.device)
 
 
 def calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):

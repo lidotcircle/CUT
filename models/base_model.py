@@ -1,9 +1,13 @@
 import os
+from typing import Any, Callable, List, Tuple
 import torch
 from collections import OrderedDict
 from abc import ABC, abstractmethod
+
+from data import CustomDatasetDataLoader, create_dataset
 from . import networks
-from metrics.all_score import calculate_scores_given_paths
+from metrics.all_score import calculate_scores_given_paths, calculate_scores_given_iter
+from util.util import copyconf, tensor2im, save_image
 
 
 class BaseModel(ABC):
@@ -23,11 +27,11 @@ class BaseModel(ABC):
             opt (Option class)-- stores all the experiment flags; needs to be a subclass of BaseOptions
 
         When creating your custom class, you need to implement your own initialization.
-        In this fucntion, you should first call <BaseModel.__init__(self, opt)>
+        In this function, you should first call <BaseModel.__init__(self, opt)>
         Then, you need to define four lists:
             -- self.loss_names (str list):          specify the training losses that you want to plot and save.
-            -- self.model_names (str list):         specify the images that you want to display and save.
-            -- self.visual_names (str list):        define networks used in our training.
+            -- self.model_names (str list):         define networks used in our training.
+            -- self.visual_names (str list):        specify the images that you want to display and save.
             -- self.optimizers (optimizer list):    define and initialize optimizers. You can define one optimizer for each network. If two networks are updated at the same time, you can use itertools.chain to group them. See cycle_gan_model.py for an example.
         """
         self.opt = opt
@@ -258,18 +262,133 @@ class BaseModel(ABC):
     def generate_visuals_for_evaluation(self, data, mode):
         return {}
 
-    def translate_test_images(self, epoch = 0):
-        pass
+    def translate_images(
+        self,
+        dataset: CustomDatasetDataLoader,
+        action: Tuple[Callable[[torch.Tensor,torch.Tensor,List[str]],Any],str],
+        AtoB: bool = None, num_test: int = 50
+        ):
+        AtoB = AtoB if AtoB is not None else self.opt.direction == 'AtoB'
+        fake_A_image_path: str = None
+        real_A_image_path: str = None
+        fake_B_image_path: str = None
+        real_B_image_path: str = None
+        if isinstance(action, str):
+            action_path = action
+            fake_B_image_path = os.path.join(action_path, f"fake_{'B' if AtoB else 'A'}")
+            real_B_image_path = os.path.join(action_path, f"real_{'B' if AtoB else 'A'}")
+            os.makedirs(fake_B_image_path, exist_ok=True)
+            os.makedirs(real_B_image_path, exist_ok=True)
+            setuped: bool = False
+            def setup_A_path():
+                nonlocal setuped, fake_A_image_path, real_A_image_path
+                if setuped:
+                    return
+                fake_A_image_path = os.path.join(action_path, f"fake_{'A' if AtoB else 'B'}")
+                real_A_image_path = os.path.join(action_path, f"real_{'A' if AtoB else 'B'}")
+                os.makedirs(fake_A_image_path, exist_ok=True)
+                os.makedirs(real_A_image_path, exist_ok=True)
+                setuped = True
 
-    def eval_metrics(self, epoch = 0) -> dict:
-        generated_imgs_dir = self.translate_test_images(epoch)
-        real_imgs_dir = os.path.join(self.opt.dataroot, 'testB')
-        result = calculate_scores_given_paths([generated_imgs_dir, real_imgs_dir], device=self.device, batch_size=50, dims=2048, use_fid_inception=True)
+            def save_action(fake_B, real_B, fake_A, real_A, name):
+                assert fake_B.size(0) == real_B.size(0) == len(name)
+                if fake_A is not None and real_A is not None:
+                    setup_A_path()
+                    assert fake_A.size(0) == real_A.size(0) == len(name)
+
+                for i, img_path in enumerate(name):
+                    bname = os.path.basename(img_path)
+                    f, r = fake_B[i], real_B[i]
+                    fp, rp = os.path.join(fake_B_image_path, bname), os.path.join(real_B_image_path, bname)
+                    save_image(tensor2im(f.unsqueeze(0)), fp)
+                    save_image(tensor2im(r.unsqueeze(0)), rp)
+
+                    if fake_A is not None and real_A is not None:
+                        f, r = fake_A[i], real_A[i]
+                        fp, rp = os.path.join(fake_A_image_path, bname), os.path.join(real_A_image_path, bname)
+                        save_image(tensor2im(f.unsqueeze(0)), fp)
+                        save_image(tensor2im(r.unsqueeze(0)), rp)
+
+            action = save_action
+
+        for fb, rb, fa, ra, p in self.translate_images_iter(dataset, num_test):
+            action(fb, rb, fa, ra, p)
+        
+        if fake_B_image_path is not None:
+            return real_B_image_path, fake_B_image_path, real_A_image_path, fake_A_image_path
+
+    def translate_images_iter(
+        self,
+        dataset: CustomDatasetDataLoader,
+        num_test: int = 50
+    ):
+        for i, data in enumerate(dataset):
+            if i >= num_test:  # only apply our model to opt.num_test images.
+                break
+
+            self.set_input(data)  # unpack data from data loader
+            self.test()           # run inference
+            visuals = self.get_current_visuals()  # get image results
+            img_path: List[str] = self.get_image_paths()     # get image paths
+            fake_B_images: torch.Tensor = visuals['fake_B']
+            real_B_images: torch.Tensor = visuals['real_B']
+            fake_A_images: torch.Tensor = None
+            real_A_images: torch.Tensor = None
+            if 'real_A' in visuals and 'fake_A' in visuals:
+                fake_A_images = visuals['fake_A']
+                real_A_images = visuals['real_A']
+            yield fake_B_images, real_B_images, fake_A_images, real_A_images, img_path
+
+    def translate_test_images(self, epoch = 0, num_test=50):
+        result_dir = os.path.abspath(os.path.join(".", "results", self.opt.name, f"test_{epoch}"))
+        test_dataset = create_dataset(copyconf(self.opt, phase="test", batch_size=self.opt.val_batch_size))
+        return self.translate_images(test_dataset, result_dir, num_test=num_test)
+
+    def eval_metrics(self, epoch = 0, num_test=50) -> List[dict]:
+        real_B_dir, fake_B_dir, real_A_dir, fake_A_dir = self.translate_test_images(epoch, num_test=num_test)
+        if fake_B_dir is None:
+            return {}
+
+        ans = []
+        result = calculate_scores_given_paths(
+                                [fake_B_dir, real_B_dir], device=self.device, batch_size=50, dims=2048,
+                                use_fid_inception=True, torch_svd=self.opt.torch_svd)
         result = result[0]
         _, kid, fid = result
         kid_m, kid_std = kid
-        ans = {}
-        ans['FID'] = fid
-        ans['KID'] = kid_m
-        ans['KID_std'] = kid_std
+        db = {}
+        db['FID'] = fid
+        db['KID'] = kid_m
+        db['KID_std'] = kid_std
+        ans.append(db)
+
+        if real_A_dir and fake_A_dir:
+            result = calculate_scores_given_paths(
+                                    [fake_A_dir, real_A_dir], device=self.device, batch_size=50, dims=2048,
+                                    use_fid_inception=True, torch_svd=self.opt.torch_svd)
+            result = result[0]
+            _, kid, fid = result
+            kid_m, kid_std = kid
+            da = {}
+            da['FID'] = fid
+            da['KID'] = kid_m
+            da['KID_std'] = kid_std
+            ans.append(da)
+
+        return ans
+
+    def eval_metrics_no(self, num_test=50) -> List[dict]:
+        test_dataset = create_dataset(copyconf(self.opt, phase="test", batch_size=self.opt.val_batch_size))
+        images = self.translate_images_iter(test_dataset, num_test=num_test)
+        stats = calculate_scores_given_iter(
+                                map(lambda b: [b[0], b[1], b[2], b[3]], images), self.device, dims=2048,
+                                use_fid_inception=True, torch_svd=self.opt.torch_svd)
+
+        ans = []
+        for fid, kid_m, kid_std in stats:
+            d = {}
+            d['FID'] = fid
+            d['KID'] = kid_m
+            d['KID_std'] = kid_std
+            ans.append(d)
         return ans

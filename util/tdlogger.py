@@ -1,3 +1,4 @@
+from distutils.command.upload import upload
 import io
 import json
 from subprocess import Popen, PIPE
@@ -5,6 +6,8 @@ import sys
 import os
 import argparse
 import asyncio
+import regex
+from tqdm import tqdm
 from typing import Tuple, Union, List, Dict
 from aiohttp import ClientSession
 from base64 import decodebytes, encodebytes
@@ -28,6 +31,7 @@ class TdLogger:
     def __start_subprocess(self):
         args = [
                     sys.executable, os.path.realpath(__file__), 
+                    "--child_mode",
                     "--endpoint", self.endpoint, 
                     "--timeout", str(self.timeout)
                 ]
@@ -36,6 +40,13 @@ class TdLogger:
         else:
             args += ["--grouptoken", self.credential]
         self._subpipe = Popen(args, stdin=PIPE, text=True)
+    
+    def wait(self):
+        if self._subpipe is None:
+            return
+        
+        self.__send_eof()
+        self._subpipe.wait()
 
     def __gen(self, data: List[dict]):
         assert len(data) > 0
@@ -84,10 +95,18 @@ class TdLogger:
         payload = json.dumps({ "data": data, "group": self.group_prefix + group })
         self.__sendmsg("sdata", payload)
 
-    def sendBlobFile(self, file: str, blobname: str, dst: str, group: str):
-        with io.open(file, mode = "rb") as image_file:
-            image_bytes = image_file.read()
-            self.sendBlob(image_bytes, blobname, dst, group)
+    def sendBlobFile(self, file: Tuple[str,bytes,io.BytesIO], blobname: str, dst: str, group: str):
+        data: bytes = None
+
+        if isinstance(file, str):
+            with io.open(file, mode = "rb") as image_file:
+                data = image_file.read()
+        elif isinstance(file, io.BytesIO):
+            data = file.getvalue()
+        elif isinstance(file, bytes):
+            data = file
+
+        self.sendBlob(data, blobname, dst, group)
 
     def sendBlob(self, blob: bytes, blobname: str, dst: str, group: str):
         blob_b64 = encodebytes(blob).decode("ascii")
@@ -110,6 +129,12 @@ class TdLogger:
             except BrokenPipeError:
                 self.__start_subprocess()
                 self.__sendmsg(msgtype, payload)
+
+    def __send_eof(self):
+        if self.disabled:
+            return
+        if self._subpipe and self._subpipe.stdin:
+            self._subpipe.stdin.close()
 
 
 class HttpLogger:
@@ -135,10 +160,10 @@ class HttpLogger:
 
     def authHeaders(self, headers: dict):
         if self.username != "":
-            headers["x-username"] = self.username
-            headers["x-password"] = self.password
+            headers["x-username"] = self.username or ''
+            headers["x-password"] = self.password or ''
         if self.grouptoken != "":
-            headers["x-grouptoken"] = self.grouptoken
+            headers["x-grouptoken"] = self.grouptoken or ''
 
     async def postSData(self, session: ClientSession, data: str, group: str):
         body_data = { "data": data, "group": group }
@@ -185,9 +210,10 @@ class HttpLogger:
         blobbytes = blobb64.encode()
         blob = decodebytes(blobbytes)
 
-        fileid = await self.postBlob(session, blob, dst);
+        fileid = await self.postBlob(session, blob, dst)
         fileurl = self.__API_blob + "/" + fileid
-        await self.postSData(session, json.dumps({ "url": fileurl, "name": blobname }), group)
+        if group is not None and group != "":
+            await self.postSData(session, json.dumps({ "url": fileurl, "name": blobname }), group)
 
     async def readline(self):
         return await asyncio.get_running_loop().run_in_executor(None, sys.stdin.readline)
@@ -195,7 +221,9 @@ class HttpLogger:
     async def __run_fetchmsg(self):
         while True:
             msg = await self.readline()
+            msg = msg.strip()
             if msg is None or len(msg) == 0:
+                self.__end = True
                 break
             self.__msg_event.set()
             msg = msg.strip()
@@ -221,7 +249,7 @@ class HttpLogger:
                         elif msgtype == "sdata":
                             await self.handler_sdata(session, payload)
                     except Exception as e:
-                        shortmsg = msg[0:min(len(msg), 10)]
+                        shortmsg = msg[0:min(len(msg), 200)]
                         if len(shortmsg) < len(msg):
                             shortmsg += "..."
                         print("%s: %s, when sending [%s], timeout=%s" % (type(e).__name__, str(e), shortmsg, self.timeout))
@@ -233,15 +261,86 @@ class HttpLogger:
 
 
 parser = argparse.ArgumentParser(description='Message Logger')
+parser.add_argument('--child_mode', action='store_true', help='switch to child mode, run as waiting parent process message to process')
 parser.add_argument('-a', '--endpoint',   type=str,   help='endpoint to post msg', required=True)
 parser.add_argument('-t', '--timeout',    type=float, help='http request timeout in seconds', default=5)
-parser.add_argument('-u', '--username',   type=str,   help='service username', default="")
-parser.add_argument('-p', '--password',   type=str,   help='service password', default="")
-parser.add_argument('-c', '--grouptoken', type=str,   help='service grouptoken', default="")
+parser.add_argument('-u', '--username',   type=str,   help='service username', default=None)
+parser.add_argument('-p', '--password',   type=str,   help='service password', default=None)
+parser.add_argument('-c', '--grouptoken', type=str,   help='service grouptoken', default=None)
 
-if __name__ == "__main__":
-    args = parser.parse_args()
+parser.add_argument('-g', '--group', type=str, help='group, only for parent mode', default="")
+parser.add_argument('-l', '--level', type=str, choices=['info', 'debug', 'warn', 'error'], help='message level, only for parent mode', default='info')
+parser.add_argument('-m', '--message', type=str, help='message, only for parent mode', default=None)
+parser.add_argument('-r', '--remote_dir', type=str, help='remote direcotry, only for parent mode', default=None)
+parser.add_argument('-f', '--file', type=str, help='file for uploading, only for parent mode', default=None)
+parser.add_argument('-d', '--dir',  type=str, help='directory for uploading, only for parent mode', default=None)
+parser.add_argument('-x', '--pattern', type=str, help='file pattern for directory uploading', default=None)
+
+def child_mode_action(args: argparse.Namespace):
     httplogger = HttpLogger(args.endpoint, args.timeout, 
                             username=args.username, password=args.password, 
                             grouptoken=args.grouptoken)
     asyncio.run(httplogger.run())
+
+def parent_mode_action(args: argparse.Namespace):
+    credential = (args.username, args.password)
+    if credential[0] is None:
+        credential = args.grouptoken
+    
+    if credential is None:
+        raise argparse.ArgumentError("credential is required")
+    
+    def to_slash_path(fp: str) -> str:
+        fp = fp.replace('\\', '/')
+        if len(fp) > 1 and fp[1] == ':':
+            fp = fp[2:]
+        return fp
+
+    logger = TdLogger(args.endpoint, args.group, 1, credential)
+    if args.message is not None:
+        data = {}
+        data['level'] = args.level
+        data['message'] = args.message
+        logger.send(data)
+    elif args.file is not None:
+        if args.remote_dir is None:
+            raise argparse.ArgumentError("'--remote_dir' is required for uploading file")
+        basename = os.path.basename(args.file)
+        dst = os.path.join(args.remote_dir, basename)
+        dst = to_slash_path(dst)
+        logger.sendBlobFile(args.file, basename, dst, group=logger.default_group)
+    elif args.dir is not None:
+        matcher = None
+        if args.pattern is not None:
+            matcher = regex.compile(args.pattern)
+
+        uploading_list = []
+        for dir, _, file_basenames in os.walk(args.dir):
+            reldir = os.path.relpath(dir, args.dir)
+            remote_dst = os.path.abspath(os.path.join(args.remote_dir, reldir))
+            for basename in file_basenames:
+                file = os.path.join(dir, basename)
+                if matcher and not matcher.match(file):
+                    continue
+                dst =os.path.join(remote_dst, basename)
+                dst = to_slash_path(dst)
+                uploading_list.append((file, basename, dst))
+                print(f'[{file}] to [{dst}]')
+        
+        with tqdm(total=len(uploading_list)) as pbar:
+            for file, basename, dst in uploading_list:
+                pbar.set_postfix_str(f'sending [{file}] to [{dst}]')
+                logger.sendBlobFile(file, basename, dst, group=logger.default_group)
+                pbar.update(1)
+    else:
+        print("do nothing")
+
+    # wait child exit
+    logger.wait()
+
+if __name__ == "__main__":
+    args = parser.parse_args()
+    if args.child_mode:
+        child_mode_action(args)
+    else:
+        parent_mode_action(args)

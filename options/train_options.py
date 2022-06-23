@@ -11,11 +11,6 @@ class TrainOptions(BaseOptions):
     def initialize(self, parser):
         parser = BaseOptions.initialize(self, parser)
 
-        # logger
-        parser.add_argument('--logger_endpoint', type=str , default="http://192.168.44.43:5445", help='logger endpoint')
-        parser.add_argument('--logger_prefix',   type=str,  default="", help='logger group prefix')
-        parser.add_argument('--disable_logger',  type=bool, default=False, help='logger endpoint')
-
         # visdom and HTML visualization parameters
         parser.add_argument('--display_freq', type=int, default=400, help='frequency of showing training results on screen')
         parser.add_argument('--display_ncols', type=int, default=4, help='if positive, display all images in a single visdom web panel with certain number of images per row.')

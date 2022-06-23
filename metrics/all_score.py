@@ -1,10 +1,52 @@
-from .fid_score import _compute_activations, calculate_activation_statistics
+from typing import Iterable, List
+
+import torch
+from tqdm import tqdm
+from .fid_score import ActivationConvertor, _compute_activations, calculate_activation_statistics, get_activations_from_tensor
 from .fid_score import calculate_frechet_distance, calculate_frechet_distance_torch
 from .kid_score import polynomial_mmd_averages
 from .models.inception import InceptionV3
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 import numpy as np
 import os
+
+
+def calculate_scores_given_iter(
+    iter: Iterable[List[torch.Tensor]],
+    device, dims, use_fid_inception=False, torch_svd=False
+    ):
+    convertor = ActivationConvertor(dims, device, use_fid_inception=use_fid_inception)
+    features_array = []
+    feat1 = None
+    feat2 = None
+    for images in tqdm(iter):
+        for i in range(len(images)):
+            if images[i] is None:
+                continue
+            feat = convertor(images[i])
+            if len(features_array) > i:
+                features_array[i] = np.concatenate([features_array[i], feat], axis=0)
+            else:
+                features_array.append(feat)
+    
+    ans = []
+    k1 = features_array[0::2]
+    k2 = features_array[1::2]
+    assert len(k1) == len(k2)
+    for feat1, feat2 in zip(k1, k2):
+        # FID
+        m1, s1 = calculate_activation_statistics(feat1)
+        m2, s2 = calculate_activation_statistics(feat2)
+        if torch_svd:
+            fid_value = calculate_frechet_distance_torch(m1, s1, m2, s2, device=device)
+        else:
+            fid_value = calculate_frechet_distance(m1, s1, m2, s2)
+        
+        # KID
+        kid_values = polynomial_mmd_averages(feat1, feat2, n_subsets=100)
+        ans.append((fid_value, kid_values[0].mean(), kid_values[0].std()))
+    
+    return ans
 
 
 def calculate_scores_given_paths(paths, batch_size, device, dims, use_fid_inception=False, torch_svd=False):

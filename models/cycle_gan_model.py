@@ -1,7 +1,6 @@
 import torch
 import itertools
 import os
-from util.translate_images import translate_images
 from util.image_pool import ImagePool
 from .base_model import BaseModel
 from . import networks
@@ -122,9 +121,15 @@ class CycleGANModel(BaseModel):
 
     def forward(self):
         """Run forward pass; called by both functions <optimize_parameters> and <test>."""
-        self.fake_B, self.style_A = self.netG_A(self.real_A, return_style=True)  # G_A(A)
+        try :
+            self.fake_B, self.style_A = self.netG_A(self.real_A, return_style=True)  # G_A(A)
+        except:
+            self.fake_B = self.netG_A(self.real_A)  # G_A(A)
         self.rec_A = self.netG_B(self.fake_B)   # G_B(G_A(A))
-        self.fake_A, self.style_B = self.netG_B(self.real_B, return_style=True)  # G_B(B)
+        try :
+            self.fake_A, self.style_B = self.netG_B(self.real_B, return_style=True)  # G_B(B)
+        except:
+            self.fake_A = self.netG_B(self.real_B)  # G_B(B)
         self.rec_B = self.netG_A(self.fake_A)   # G_A(G_B(B))
 
     def backward_D_basic(self, netD, real, fake):
@@ -171,10 +176,16 @@ class CycleGANModel(BaseModel):
         # Identity loss
         if lambda_idt > 0:
             # G_A should be identity if real_B is fed: ||G_A(B) - B||
-            self.idt_A, self.style_Ax = self.netG_A(self.real_B, return_style=True)
+            try:
+                self.idt_A, self.style_Ax = self.netG_A(self.real_B, return_style=True)
+            except:
+                self.idt_A = self.netG_A(self.real_B)
             self.loss_idt_A = self.criterionIdt(self.idt_A, self.real_B) * lambda_B * lambda_idt
             # G_B should be identity if real_A is fed: ||G_B(A) - A||
-            self.idt_B, self.style_Bx = self.netG_B(self.real_A, return_style=True)
+            try:
+                self.idt_B, self.style_Bx = self.netG_B(self.real_A, return_style=True)
+            except:
+                self.idt_B = self.netG_B(self.real_A)
             self.loss_idt_B = self.criterionIdt(self.idt_B, self.real_A) * lambda_A * lambda_idt
         else:
             self.loss_idt_A = 0
@@ -202,12 +213,6 @@ class CycleGANModel(BaseModel):
 
     def data_dependent_initialize(self, data):
         return
-
-    def translate_test_images(self, epoch = 0):
-        src_dir = os.path.join(self.opt.dataroot, "testA")
-        tgt_dir = "%s_eval_%s" % (src_dir, epoch)
-        translate_images(self.netG_A, src_dir, tgt_dir, self.device)
-        return tgt_dir
 
     def generate_visuals_for_evaluation(self, data, mode):
         with torch.no_grad():

@@ -22,6 +22,11 @@ class BaseOptions():
 
     def initialize(self, parser):
         """Define the common options that are used in both training and test."""
+        # logger
+        parser.add_argument('--logger_endpoint', type=str , default="http://192.168.44.43:5445", help='logger endpoint')
+        parser.add_argument('--logger_prefix',   type=str,  default="", help='logger group prefix')
+        parser.add_argument('--disable_logger',  type=bool, default=False, help='logger endpoint')
+
         # basic parameters
         parser.add_argument('--dataroot', default='placeholder', help='path to images (should have subfolders trainA, trainB, valA, valB, etc)')
         parser.add_argument('--name', type=str, default='experiment_name', help='name of the experiment. It decides where to store samples and models')
@@ -65,6 +70,8 @@ class BaseOptions():
         parser.add_argument('--epoch', type=str, default='latest', help='which epoch to load? set to latest to use latest cached model')
         parser.add_argument('--verbose', action='store_true', help='if specified, print more debugging information')
         parser.add_argument('--suffix', default='', type=str, help='customized suffix: opt.name = opt.name + suffix: e.g., {model}_{netG}_size{load_size}')
+        parser.add_argument('--num_test', type=int, default=50, help='how many test images to run')
+        parser.add_argument('--torch_svd', action='store_true', help='SVD with torch in evaluating FID (different value with original scipy method)')
 
         # parameters related to StyleGAN2-based networks
         parser.add_argument('--stylegan2_G_num_downsampling',
