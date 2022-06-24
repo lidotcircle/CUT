@@ -1,6 +1,7 @@
 from typing import Iterable, List
 
 import torch
+from torchvision.transforms import functional as TF
 from tqdm import tqdm
 from .fid_score import ActivationConvertor, _compute_activations, calculate_activation_statistics, get_activations_from_tensor
 from .fid_score import calculate_frechet_distance, calculate_frechet_distance_torch
@@ -23,7 +24,8 @@ def calculate_scores_given_iter(
         for i in range(len(images)):
             if images[i] is None:
                 continue
-            feat = convertor(images[i])
+            img = TF.normalize(images[i], (-1, -1, -1), (2, 2, 2))
+            feat = convertor(img)
             if len(features_array) > i:
                 features_array[i] = np.concatenate([features_array[i], feat], axis=0)
             else:
