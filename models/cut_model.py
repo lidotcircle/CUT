@@ -264,12 +264,13 @@ class CUTModel(BaseModel):
 
     def compute_visuals(self):
         """Calculate additional output images for visdom and HTML visualization"""
-        pred_fake = self.netD(self.augment_pipe_dis(self.fake_B) if self.enable_ADA else self.fake_B)
-        pred_real = self.netD(self.augment_pipe_dis(self.real_B) if self.enable_ADA else self.real_B)
-        self.validation_loss_fake = self.criterionGAN(pred_fake, False).mean().item()
-        self.validation_loss_real = self.criterionGAN(pred_real, True).mean().item()
-        self.dis_stats.report_validation_loss(self.validation_loss_real)
-        self.adjust_augment_p()
+        if hasattr(self, 'netD'):
+            pred_fake = self.netD(self.augment_pipe_dis(self.fake_B) if self.enable_ADA else self.fake_B)
+            pred_real = self.netD(self.augment_pipe_dis(self.real_B) if self.enable_ADA else self.real_B)
+            self.validation_loss_fake = self.criterionGAN(pred_fake, False).mean().item()
+            self.validation_loss_real = self.criterionGAN(pred_real, True).mean().item()
+            self.dis_stats.report_validation_loss(self.validation_loss_real)
+            self.adjust_augment_p()
 
     def adjust_augment_p(self):
         if not self.enable_ADA:
@@ -279,12 +280,6 @@ class CUTModel(BaseModel):
         self.augment_p = min(max(self.augment_pipe_dis.p.item() + adjust, 0), 1)
         self.augment_pipe_dis.p.copy_(torch.as_tensor(self.augment_p))
     
-    def translate_test_images(self, epoch = 0):
-        src_dir = os.path.join(self.opt.dataroot, "testA")
-        tgt_dir = "%s_eval_%s" % (src_dir, epoch)
-        translate_images(self.netG, src_dir, tgt_dir, self.device)
-        return tgt_dir
-
     def compute_D_loss(self):
         """Calculate GAN loss for the discriminator"""
         fake = self.fake_B.detach()
